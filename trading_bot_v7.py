@@ -34,7 +34,9 @@ from collections import deque
 # ⚙️  CONFIGURAÇÃO
 # ─────────────────────────────────────────────
 
-DISCORD_WEBHOOK_URL = "COLA_AQUI_O_TEU_WEBHOOK_URL"
+import os
+
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 CONFIG = {
     "min_confidence":      55,
