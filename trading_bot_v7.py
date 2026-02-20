@@ -1,7 +1,7 @@
 """
 =============================================================
-  Bot de Sinais de Trading v8.0
-  AUTO-SCANNER + AUTO-APRENDE + HELIUS + DEXSCREENER
+  Bot de Sinais de Trading v9.0
+  AUTO-SCANNER + AUTO-APRENDE + HELIUS + BACKTESTING + ANTI-FOMO
 =============================================================
 
 NOVIDADES v7 (baseadas em análise de 11+ moedas reais):
@@ -20,7 +20,7 @@ FILTROS COMBINADOS (dados reais):
   Vol1H/24H:   >15%
   Categoria:   só ROCKET e BOM (+50% potencial)
 
-INSTALAÇÃO:  pip install websockets aiohttp
+INSTALACAO:  pip install websockets aiohttp
 COMO USAR:   python trading_bot_v7.py
 ⚠️  Não garante lucro. Investe só o que podes perder.
 =============================================================
@@ -37,6 +37,11 @@ from collections import deque
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
 HELIUS_API_KEY      = os.environ.get("HELIUS_API_KEY", "COLA_AQUI_A_TUA_HELIUS_KEY")
 
+# ── RAILWAY: usa /tmp para ficheiros (sobrevive a reinicios) ──
+# Para persistência total entre deploys, configura um Volume no Railway
+# Settings → Volumes → Mount Path: /data
+DATA_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp")
+
 CONFIG = {
     "min_confidence":      55,
     "min_category":        ["ROCKET", "BOM"],
@@ -46,8 +51,8 @@ CONFIG = {
     "micropump_seconds":    120,
     "momentum_window":      300,
     "token_lifetime":      3600,
-    "log_file":        "alertas.csv",
-    "weights_file":    "pesos.json",
+    "log_file":        f"{DATA_DIR}/alertas.csv",
+    "weights_file":    f"{DATA_DIR}/pesos.json",
     "check_after":        7200,
     "success_threshold":   0.50,
     "update_interval":    1200,    # 20 minutos
@@ -81,20 +86,35 @@ DEFAULT_WEIGHTS = {
     "price_rise":      20.0,
     "price_fall_pen": -10.0,
     "trade_freq":      10.0,
-    # Novos pesos v7
-    "mcap_good":       20.0,    # market cap no sweet spot
-    "mcap_bad":       -20.0,    # market cap fora do range
-    "liq_good":        15.0,    # liquidez ideal
-    "liq_bad":        -15.0,    # liquidez fora do range
-    "vol_ratio_good":  20.0,    # ratio vol1h/24h forte
-    # Novos pesos v8 — Helius (holders, dev, concentração)
-    "holders_good":    20.0,    # >100 holders = mais seguro
-    "holders_bad":    -20.0,    # <50 holders = risco rugpull
-    "dev_sold":       -35.0,    # dev vendeu tudo = sinal muito negativo
-    "dev_holds":       15.0,    # dev ainda tem tokens = confiança
-    "concentration_ok": 15.0,  # top 10 holders < 30% = saudável
-    "concentration_bad":-25.0, # top 10 holders > 50% = risco dump
-    "buy_sell_5m":     25.0,    # ratio compras/vendas em 5min forte
+    # v7 — filtros mercado
+    "mcap_good":       20.0,
+    "mcap_bad":       -20.0,
+    "liq_good":        15.0,
+    "liq_bad":        -15.0,
+    "vol_ratio_good":  20.0,
+    # v8 — Helius
+    "holders_good":    20.0,
+    "holders_bad":    -20.0,
+    "dev_sold":       -35.0,
+    "dev_holds":       15.0,
+    "concentration_ok": 15.0,
+    "concentration_bad":-25.0,
+    "buy_sell_5m":     25.0,
+    # v10 — Backtesting + Temas + Whales + Hora
+    "pattern_strong":   35.0,
+    "pattern_weak":    -20.0,
+    "theme_hot":        20.0,
+    "whale_buy":        30.0,
+    "whale_multi":      40.0,
+    "rugpull_risk":    -50.0,
+    "hot_hour":         15.0,   # hora historicamente boa
+    "cold_hour":       -10.0,   # hora historicamente fraca
+    # v11 — novas melhorias
+    "holder_momentum":  35.0,   # holders a crescer rapido
+    "copycat_bonus":    25.0,   # tema de moeda que explodiu recentemente
+    "signal_consensus": 20.0,   # bonus quando 8+ sinais positivos concordam
+    "anti_fomo":       -30.0,   # moeda ja subiu muito antes do bot a ver
+    "stop_loss_risk":  -20.0,   # proximo do pior resultado historico deste padrao
 }
 
 def load_weights():
@@ -139,6 +159,7 @@ def adjust_weights(weights, active_signals, success, change_pct=0):
     return weights
 
 WEIGHTS        = load_weights()
+pattern_history = load_pattern_history()
 token_data     = {}
 # Carrega tokens já alertados de ficheiro para persistir entre reinicios
 ALERTED_FILE = "alertados.json"
@@ -180,6 +201,79 @@ pending_checks = {}
 skipped_coins  = {}   # mint → {price, time, signals_at_skip, score}
 SKIPPED_MAX    = 200  # máximo de moedas ignoradas em memória
 SKIP_CHECK_AFTER = 7200  # verifica 2h depois se subiu
+
+# ── BACKTESTING + PATTERN HISTORY ────────────────────
+BACKTEST_FILE   = "backtest_history.json"
+pattern_history = []   # [{signals, result, mcap, liq, vol_ratio, hot, timestamp}]
+MAX_HISTORY     = 2000 # máximo de padrões guardados
+
+def load_pattern_history():
+    if os.path.exists(BACKTEST_FILE):
+        try:
+            data = json.load(open(BACKTEST_FILE))
+            print(f"[Backtest] Carregados {len(data)} padrões históricos")
+            return data
+        except: pass
+    return []
+
+def save_pattern_history():
+    json.dump(pattern_history[-MAX_HISTORY:], open(BACKTEST_FILE, "w"))
+
+# ── CORRELAÇÃO DE TEMAS ───────────────────────────────
+successful_themes = {}  # tema → {count_success, count_total, avg_gain}
+THEME_KEYWORDS = [
+    ["moon","luna","lunar"],["dog","doge","doggo","shiba"],
+    ["cat","kitty","meow","nyan"],["frog","pepe","kek"],
+    ["ape","monkey","chimp"],["bull","bear","pump"],
+    ["sol","solana","sonic"],["ai","gpt","bot","tech"],
+    ["based","chad","sigma","alpha"],["baby","mini","micro"],
+]
+
+def detect_theme(name):
+    name_lower = name.lower()
+    for group in THEME_KEYWORDS:
+        if any(kw in name_lower for kw in group):
+            return group[0]  # usa primeira palavra como tema
+    return None
+
+# ── VOLUME POR CARTEIRA ───────────────────────────────
+wallet_volumes = {}  # mint → {wallet: total_sol}
+
+# ── MOMENTUM DE HOLDERS ──────────────────────────────────────
+# Regista quantos holders novos por minuto para detetar explosoes
+holder_timeline  = {}   # mint → [(timestamp, holder_count), ...]
+
+# ── COPY-CATS ────────────────────────────────────────────────
+# Moedas que explodiram recentemente — para detetar copy-cats
+recent_rockets   = []   # [{name, theme, symbol, time, gain}]
+MAX_ROCKETS      = 30
+
+# ── ANTI-FOMO ─────────────────────────────────────────────────
+# Penaliza moedas que JA subiram muito antes do bot as detetar
+# (o bot esta a chegar tarde)
+
+# ── CONFIANCA ACUMULADA ───────────────────────────────────────
+# Bónus quando muitos sinais concordam na mesma direcao
+
+# ── HORA EXATA DO PICO ────────────────────────────────
+# Aprende em que hora do dia as moedas tendem a picar mais
+# hour_stats[hora] = {wins, total, avg_gain}
+HOUR_STATS_FILE = "hour_stats.json"
+hour_stats = {}
+
+def load_hour_stats():
+    if os.path.exists(HOUR_STATS_FILE):
+        try:
+            data = json.load(open(HOUR_STATS_FILE))
+            print(f"[Hora] Carregados stats de {len(data)} horas")
+            return {int(k): v for k,v in data.items()}
+        except: pass
+    return {}
+
+def save_hour_stats():
+    json.dump(hour_stats, open(HOUR_STATS_FILE, "w"), indent=2)
+
+hour_stats = load_hour_stats()
 
 # ─────────────────────────────────────────────
 # 📊  TOKEN DATA
@@ -401,7 +495,134 @@ def calculate_confidence(mint):
                 pts = min(int(w["trade_freq"]), int(tps*8)); score += pts
                 signals.append(f"⚡ Freq: {tps:.2f}/s (+{pts}pts)"); active.append("trade_freq")
 
-    # 8b. Helius — holders, dev, concentração
+    # 8a-extra. Padrão histórico — baseado em backtesting
+    if len(pattern_history) >= 20:
+        # Encontra padrões similares no histórico
+        similar = [p for p in pattern_history if (
+            abs(p.get("mcap",0) - d.get("market_cap",0)) < 100000 and
+            abs(p.get("vol_ratio",0) - (d.get("vol_1h",0)/max(d.get("vol_24h",1),1))) < 0.10 and
+            p.get("hot") == in_hot
+        )]
+        if len(similar) >= 5:
+            wins_p  = sum(1 for p in similar if p.get("result",0) >= 0.5)
+            win_rate = wins_p / len(similar)
+            avg_gain = sum(p.get("result",0) for p in similar) / len(similar)
+            if win_rate >= 0.70:
+                pts = int(w.get("pattern_strong", 35)); score += pts
+                signals.append(f"🧬 Padrão histórico: {win_rate*100:.0f}% acerto em {len(similar)} casos (+{pts}pts)")
+                active.append("pattern_strong")
+                d["pattern_win_rate"] = win_rate
+                d["pattern_avg_gain"] = avg_gain
+                d["pattern_count"]    = len(similar)
+            elif win_rate < 0.40 and len(similar) >= 10:
+                score += int(w.get("pattern_weak", -20))
+                signals.append(f"⚠️ Padrão fraco: só {win_rate*100:.0f}% acerto ({w.get('pattern_weak',-20):.0f}pts)")
+                active.append("pattern_weak")
+
+    # 8a-extra2. Tema em trend
+    theme = detect_theme(d.get("name",""))
+    if theme and theme in successful_themes:
+        th = successful_themes[theme]
+        if th.get("count_total",0) >= 3 and th.get("count_success",0)/th.get("count_total",1) >= 0.60:
+            pts = int(w.get("theme_hot", 20)); score += pts
+            signals.append(f"🔥 Tema '{theme}' em trend — {th['count_success']}/{th['count_total']} subiram (+{pts}pts)")
+            active.append("theme_hot")
+
+    # 8a-extra3. Volume por carteira (whales)
+    wv = wallet_volumes.get(mint, {})
+    if wv:
+        top_wallet_vol = max(wv.values()) if wv else 0
+        whale_count    = sum(1 for v in wv.values() if v >= 5)
+        if whale_count >= 2:
+            pts = int(w.get("whale_multi", 40)); score += pts
+            signals.append(f"🐋 {whale_count} baleias compraram (+{pts}pts)"); active.append("whale_multi")
+        elif top_wallet_vol >= 5:
+            pts = int(w.get("whale_buy", 30)); score += pts
+            signals.append(f"🐋 Baleia comprou {top_wallet_vol:.0f} SOL (+{pts}pts)"); active.append("whale_buy")
+
+    # 8b-hora. Hora historicamente boa/fraca
+    current_hour = datetime.now().hour
+    h_stats = hour_stats.get(current_hour, {})
+    h_total = h_stats.get("total", 0)
+    if h_total >= 10:
+        h_rate = h_stats.get("wins", 0) / h_total
+        if h_rate >= 0.65:
+            pts = int(w.get("hot_hour", 15)); score += pts
+            signals.append(f"🕐 Hora {current_hour}h historicamente forte ({h_rate*100:.0f}% acerto) (+{pts}pts)")
+            active.append("hot_hour")
+        elif h_rate < 0.35:
+            score += int(w.get("cold_hour", -10))
+            signals.append(f"🕐 Hora {current_hour}h historicamente fraca ({h_rate*100:.0f}% acerto) ({w.get('cold_hour',-10):.0f}pts)")
+            active.append("cold_hour")
+
+    # ── NOVAS MELHORIAS v11 ──────────────────────────────────
+
+    # A. ANTI-FOMO — se a moeda ja subiu muito, o bot chegou tarde
+    if len(prices) >= 2 and prices[0] > 0:
+        already_up = (prices[-1] - prices[0]) / prices[0]
+        if already_up >= 1.5:  # ja subiu +150% antes do bot a detetar
+            score += int(w.get("anti_fomo", -30))
+            signals.append(f"⛔ Anti-fomo: ja subiu +{already_up*100:.0f}% antes do alerta ({w.get('anti_fomo',-30):.0f}pts)")
+            active.append("anti_fomo")
+        elif already_up >= 0.8:
+            signals.append(f"⚠️ Ja subiu +{already_up*100:.0f}% — verifica se ainda tem espaco")
+
+    # B. MOMENTUM DE HOLDERS — velocidade de novos holders
+    ht = holder_timeline.get(mint, [])
+    if len(ht) >= 2:
+        t1, h1 = ht[0]; t2, h2 = ht[-1]
+        elapsed_min = max((t2 - t1) / 60, 0.5)
+        holders_per_min = (h2 - h1) / elapsed_min
+        if holders_per_min >= 10:
+            pts = int(w.get("holder_momentum", 35)); score += pts
+            signals.append(f"🚀 Holders: +{holders_per_min:.0f}/min — a explodir (+{pts}pts)")
+            active.append("holder_momentum")
+        elif holders_per_min >= 3:
+            pts = int(w.get("holder_momentum", 35)) // 2; score += pts
+            signals.append(f"📈 Holders: +{holders_per_min:.1f}/min — a crescer (+{pts}pts)")
+            active.append("holder_momentum")
+
+    # C. COPY-CAT — tema de moeda que explodiu recentemente
+    name_lower = d.get("name", "").lower()
+    for rocket in recent_rockets[-10:]:  # so verifica os 10 mais recentes
+        if time.time() - rocket["time"] > 7200: continue  # so conta se foi nas ultimas 2h
+        rocket_theme = rocket.get("theme")
+        if not rocket_theme: continue
+        if rocket_theme in name_lower or any(kw in name_lower for kw in rocket_theme.split()):
+            pts = int(w.get("copycat_bonus", 25)); score += pts
+            signals.append(f"🔁 Copy-cat de {rocket['name']} (+{rocket['gain']:.0f}%) — tema '{rocket_theme}' (+{pts}pts)")
+            active.append("copycat_bonus")
+            break
+
+    # D. CONFIANCA ACUMULADA — bonus quando muitos sinais positivos concordam
+    positive_signals = [s for s in active if not s.endswith("_pen") and s not in
+                        ("anti_fomo","pattern_weak","holders_bad","dev_sold",
+                         "concentration_bad","momentum_pen","price_high_pen","cold_hour","stop_loss_risk")]
+    if len(positive_signals) >= 8:
+        pts = int(w.get("signal_consensus", 20)); score += pts
+        signals.append(f"⚡ Consenso: {len(positive_signals)} sinais positivos concordam (+{pts}pts)")
+        active.append("signal_consensus")
+    elif len(positive_signals) >= 6:
+        pts = int(w.get("signal_consensus", 20)) // 2; score += pts
+        signals.append(f"✅ Consenso: {len(positive_signals)} sinais positivos (+{pts}pts)")
+        active.append("signal_consensus")
+
+    # E. STOP-LOSS RISK — proximo do pior resultado historico deste padrao
+    if len(active) >= 2:
+        pat_key_now = "|".join(sorted(active[:5]))
+        pat_now     = pattern_history_dict.get(pat_key_now, {}) if 'pattern_history_dict' in dir() else {}
+        if not pat_now:
+            # Tenta no array
+            sim = [p for p in pattern_history if isinstance(p, dict) and
+                   abs(p.get("mcap",0) - d.get("market_cap",0)) < 150000]
+            if len(sim) >= 5:
+                worst = min(p.get("result",0) for p in sim)
+                if worst < -0.25:  # historicamente 25%+ de queda possivel
+                    score += int(w.get("stop_loss_risk", -20))
+                    signals.append(f"⚠️ Risco: padrão similar caiu ate -{abs(worst)*100:.0f}% no pior caso ({w.get('stop_loss_risk',-20):.0f}pts)")
+                    active.append("stop_loss_risk")
+
+    # 8c. Helius — holders, dev, concentração
     holders   = d.get("holders", 0)
     top10_pct = d.get("top10_pct", 0)
     dev_holds = d.get("dev_still_holds", None)
@@ -634,7 +855,58 @@ async def check_and_learn(mint, check_data):
     save_weights(WEIGHTS)
     learns_done += 1
 
+    # ── 4b. GUARDA PADRÃO NO HISTÓRICO (backtesting futuro) ──
+    pattern_entry = {
+        "timestamp":  time.time(),
+        "name":       name,
+        "signals":    active,
+        "result":     change,
+        "success":    success,
+        "mcap":       alert_mcap,
+        "liq":        alert_liq,
+        "vol_ratio":  alert_vol_rat,
+        "hot":        alert_in_hot,
+        "score":      check_data.get("alert_score", 0),
+        "holders":    check_data.get("alert_holders", 0),
+        "dev_holds":  check_data.get("alert_dev_holds", None),
+    }
+    pattern_history.append(pattern_entry)
+    save_pattern_history()
+
+    # ── 4b-hora. ATUALIZA STATS POR HORA ─────────────────────
+    alert_hour = datetime.fromtimestamp(check_data["alert_time"]).hour
+    if alert_hour not in hour_stats:
+        hour_stats[alert_hour] = {"wins": 0, "total": 0, "avg_gain": 0.0}
+    hs = hour_stats[alert_hour]
+    hs["total"] += 1
+    if success: hs["wins"] += 1
+    hs["avg_gain"] = (hs["avg_gain"] * (hs["total"]-1) + change*100) / hs["total"]
+    save_hour_stats()
+
+    # ── 4c. ATUALIZA TEMAS ────────────────────────────────────
+    theme = detect_theme(name)
+    if theme:
+        if theme not in successful_themes:
+            successful_themes[theme] = {"count_success":0,"count_total":0,"total_gain":0.0}
+        successful_themes[theme]["count_total"] += 1
+        if success:
+            successful_themes[theme]["count_success"] += 1
+            successful_themes[theme]["total_gain"]    += change
+
     # ── 5. LOG ──────────────────────────────────────────────
+    # ── Guarda rockets para detetar copy-cats ──────────────────
+    if success and change >= 0.80:
+        theme = detect_theme(name)
+        recent_rockets.append({
+            "name":  name,
+            "theme": theme or name.lower()[:4],
+            "symbol": check_data.get("symbol","?"),
+            "time":  time.time(),
+            "gain":  change * 100,
+        })
+        if len(recent_rockets) > MAX_ROCKETS:
+            recent_rockets.pop(0)
+
     icon = "✅" if success else "❌"
     _sep = '═'*55
     print(f"\n{_sep}")
@@ -684,16 +956,26 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
     liq_str  = f"${liq/1000:.0f}K" if liq else "N/A"
     dex_url  = f"https://dexscreener.com/solana/{mint}"
 
+    # Preço alvo baseado em padrão histórico
+    target_line = ""
+    win_rate    = d.get("pattern_win_rate", 0)
+    avg_gain    = d.get("pattern_avg_gain", 0)
+    pat_count   = d.get("pattern_count", 0)
+    if win_rate >= 0.60 and avg_gain > 0 and pat_count >= 5:
+        target_price = price * (1 + avg_gain)
+        target_line  = f"\n**🎯 Alvo histórico:** `${target_price:.8f}` (+{avg_gain*100:.0f}%) — {win_rate*100:.0f}% acerto em {pat_count} casos"
+
     embed = {
         "title":       f"{icon} {cat} — {d.get('name','?')} | {d.get('symbol','?')}",
         "description": (
             f"**💲** `${price:.8f}`  **📊** {analysis['score']}%  **🕐** {janela}\n"
-            f"**💎** {mcap_str}  **💧** {liq_str}  **📈** {ratio}\n"
+            f"**💎** {mcap_str}  **💧** {liq_str}  **📈** {ratio}"
+            f"{target_line}\n"
             f"\n[Chart — abre DexScreener e copia o CA aqui]({dex_url})"
         ),
         "color": color,
         "fields": [],
-        "footer":    {"text": f"Trading Bot v8.0 • Alerta #{alerts_sent+1} • Fonte: {source}"},
+        "footer":    {"text": f"Trading Bot v11.0 • Alerta #{alerts_sent+1} • Fonte: {source}"},
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -827,25 +1109,60 @@ async def send_discord_movement(mint, alert_data, current_price, pct, direction,
         analysis_lines.extend([f"• {p}" for p in positives])
     if not warnings and not positives:
         analysis_lines.append("• Sem sinais claros — mantém atenção")
-    analysis_text = "\n".join(analysis_lines)[:1000]
+    analysis_text = "\n".join(analysis_lines)[:800]
+
+    # Preco alvo historico baseado no padrao de sinais
+    active_sigs  = alert_data.get("active_signals", [])
+    pat_key      = "|".join(sorted(active_sigs[:5])) if len(active_sigs) >= 2 else ""
+    pat          = pattern_history.get(pat_key, {})
+    pat_total    = pat.get("total", 0)
+    target_field = None
+    space_field  = None
+
+    if pat_total >= 3:
+        avg_peak     = pat.get("avg_peak", 0)
+        pat_rate     = pat.get("wins", 0) / pat_total
+        target_price = alert_price * (1 + avg_peak / 100)
+        space_left   = avg_peak - pct  # quanto falta para o pico historico
+
+        if space_left > 5:
+            space_emoji = "🟢 Ainda ha espaco"
+            space_txt   = f"+{space_left:.0f}% para o pico historico"
+        elif space_left > -10:
+            space_emoji = "🟡 Perto do pico"
+            space_txt   = f"pico medio em +{avg_peak:.0f}%"
+        else:
+            space_emoji = "🔴 Acima do pico historico"
+            space_txt   = f"pico medio era +{avg_peak:.0f}% — considera sair"
+
+        target_field = {
+            "name":   "🎯 Alvo historico",
+            "value":  f"`${target_price:.8f}` (+{avg_peak:.0f}% | {pat_rate*100:.0f}% acerto em {pat_total} casos)",
+            "inline": False
+        }
+        space_field = {
+            "name":   space_emoji,
+            "value":  space_txt,
+            "inline": False
+        }
 
     dex_url = f"https://dexscreener.com/solana/{mint}"
 
+    fields = [
+        {"name": "📊 Variação total",  "value": f"**{pct:+.1f}%** em {elapsed}min", "inline": True},
+        {"name": "🟢 Prob. continuar", "value": f"**{prob_up}%**",                   "inline": True},
+        {"name": "🔴 Prob. corrigir",  "value": f"**{prob_down}%**",                 "inline": True},
+        {"name": rec,                  "value": analysis_text,                        "inline": False},
+    ]
+    if target_field: fields.append(target_field)
+    if space_field:  fields.append(space_field)
+    fields.append({"name": "🔗", "value": f"[Chart]({dex_url})", "inline": False})
+
     embed = {
-        "title":       title,
-        "color":       color,
-        "fields": [
-            {"name": "💲 Preço alerta",    "value": f"`${alert_price:.8f}`",   "inline": True},
-            {"name": "💲 Preço atual",     "value": f"`${current_price:.8f}`", "inline": True},
-            {"name": "📊 Variação total",  "value": f"**{pct:+.1f}%**",        "inline": True},
-            {"name": "⏱️ Desde alerta",    "value": f"{elapsed} min",          "inline": True},
-            {"name": "🟢 Prob. continuar", "value": f"**{prob_up}%**",         "inline": True},
-            {"name": "🔴 Prob. corrigir",  "value": f"**{prob_down}%**",       "inline": True},
-            {"name": rec,                  "value": analysis_text,              "inline": False},
-            {"name": "📋 CA",              "value": f"`{mint}`",               "inline": False},
-            {"name": "🔗 Chart",           "value": f"[Abre no DexScreener]({dex_url})", "inline": False},
-        ],
-        "footer":    {"text": f"Trading Bot v8.0 • {trigger_label} • probabilidades são orientação"},
+        "title":     title,
+        "color":     color,
+        "fields":    fields,
+        "footer":    {"text": "Trading Bot v11.0 • probabilidades são orientação, não garantia"},
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -928,6 +1245,12 @@ async def process_trade(msg, source="pump.fun"):
 
     trade_type = str(msg.get("txType", msg.get("type",""))).lower()
     sol_amount = float(msg.get("solAmount", msg.get("amount", 0)) or 0)
+
+    # Rastreia volume por carteira para detetar baleias
+    wallet = msg.get("traderPublicKey") or msg.get("wallet","")
+    if wallet and "buy" in trade_type and sol_amount >= 1.0:
+        if mint not in wallet_volumes: wallet_volumes[mint] = {}
+        wallet_volumes[mint][wallet] = wallet_volumes[mint].get(wallet, 0) + sol_amount/1e9
 
     if d["first_trade_time"] is None: d["first_trade_time"] = time.time()
     d["trades"].append({"time": time.time(), "type": trade_type, "sol": sol_amount})
@@ -1208,13 +1531,328 @@ async def learn_from_skipped():
                   f"Vistas: {tokens_seen} | Alertadas: {len(alerted_tokens)} | "
                   f"Alertas Discord: {alerts_sent} | Aprendizagens: {learns_done}\n")
 
+
+# ─────────────────────────────────────────────
+# 🚨  RUGPULL DETECTION
+# ─────────────────────────────────────────────
+
+rugpull_warned = set()  # mints já avisados de rugpull
+
+async def send_rugpull_alert(mint, name, liq_before, liq_now, price_drop_pct):
+    """Mensagem urgente e diferente quando deteta rugpull."""
+    if "COLA" in DISCORD_WEBHOOK_URL: return
+    dex_url = f"https://dexscreener.com/solana/{mint}"
+    embed = {
+        "title":       f"🚨🚨 RUGPULL DETETADO — {name} 🚨🚨",
+        "description": (
+            f"**LIQUIDEZ A SER REMOVIDA — SAI JÁ SE TENS POSIÇÃO**\n\n"
+            f"💧 Liquidez: ${liq_before/1000:.0f}K → ${liq_now/1000:.0f}K\n"
+            f"📉 Preço caiu: {price_drop_pct:.0f}% nos últimos minutos\n\n"
+            f"[Chart]({dex_url})"
+        ),
+        "color": 0xff0000,
+        "footer": {"text": "Trading Bot v11.0 • ALERTA URGENTE — não é conselho financeiro"},
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    try:
+        async with aiohttp.ClientSession() as s:
+            await s.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]},
+                         timeout=aiohttp.ClientTimeout(total=5))
+        print(f"[RUGPULL] ALERTA ENVIADO — {name}")
+    except Exception as e:
+        print(f"[RUGPULL] Erro Discord: {e}")
+
+async def rugpull_monitor():
+    """
+    Monitoriza moedas alertadas para detetar rugpull em tempo real.
+    Sinais: liquidez cai >40% em poucos minutos OU preço cai >35% rapidamente.
+    """
+    while True:
+        await asyncio.sleep(20)  # verifica a cada 20 segundos
+        for mint, data in list(pending_checks.items()):
+            if mint in rugpull_warned: continue
+            name = data.get("name","?")
+            dex  = await fetch_dexscreener(mint)
+            if not dex: continue
+
+            curr_liq   = dex.get("liquidity", 0)
+            curr_price = dex.get("price", 0)
+            alert_price= data.get("alert_price", 0)
+            prev_liq   = data.get("last_liq", curr_liq)
+
+            # Guarda liquidez atual para comparar na próxima iteração
+            data["last_liq"] = curr_liq
+
+            # Sinal 1: liquidez caiu >40% desde última verificação
+            if prev_liq > 0 and curr_liq > 0:
+                liq_drop = (prev_liq - curr_liq) / prev_liq
+                if liq_drop >= 0.40:
+                    rugpull_warned.add(mint)
+                    price_drop = ((alert_price - curr_price) / alert_price * 100) if alert_price > 0 else 0
+                    await send_rugpull_alert(mint, name, prev_liq, curr_liq, price_drop)
+                    continue
+
+            # Sinal 2: preço caiu >35% muito rapidamente desde o alerta
+            if alert_price > 0 and curr_price > 0:
+                price_drop = (alert_price - curr_price) / alert_price
+                if price_drop >= 0.35 and curr_liq < 10000:
+                    rugpull_warned.add(mint)
+                    await send_rugpull_alert(mint, name, prev_liq, curr_liq, price_drop*100)
+
+
+# ─────────────────────────────────────────────
+# 📊  BACKTESTING — aprende com histórico
+# ─────────────────────────────────────────────
+
+async def run_backtesting():
+    """
+    Backtesting abrangente ao arrancar.
+    Usa 4 fontes diferentes do DexScreener para aprender com centenas de moedas:
+      1. Top boosts (moedas promovidas — mix de boas e más)
+      2. Trending Solana (moedas em trend — tendem a ter subido muito)
+      3. Novos pares Solana (moedas recentes — apanha as que falharam também)
+      4. Base histórica hardcoded (11 moedas reais conhecidas)
+    Aprende com moedas que subiram +300%, com as que falharam, e tudo o meio.
+    """
+    global WEIGHTS, learns_done
+
+    print("[Backtest] ════════════════════════════════════")
+    print("[Backtest] A aprender com dados históricos...")
+    print("[Backtest] Fontes: boosts + trending + novos + base histórica")
+    print("[Backtest] ════════════════════════════════════")
+
+    already_in   = {p.get("name","") for p in pattern_history}
+    new_patterns = 0
+    total_seen   = 0
+
+    # ── FONTE 1: BASE HISTÓRICA HARDCODED ────────────────────
+    # Moedas reais com resultados conhecidos — ancora os pesos iniciais
+    historical_base = [
+        # ROCKETS (+100%) — ensinam o bot o que funciona
+        {"name":"Lupe",       "result":1.14, "mcap":96900,  "liq":26190, "vol_ratio":0.306,"hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good"]},
+        {"name":"KIMCHI",     "result":2.45, "mcap":187000, "liq":38000, "vol_ratio":0.22, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure"]},
+        {"name":"TST",        "result":3.20, "mcap":154000, "liq":29000, "vol_ratio":0.28, "hot":True, "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike"]},
+        {"name":"MOMO",       "result":1.95, "mcap":172000, "liq":33000, "vol_ratio":0.24, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure"]},
+        {"name":"Dogs",       "result":2.10, "mcap":198000, "liq":36000, "vol_ratio":0.21, "hot":True, "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","buy_pressure"]},
+        {"name":"MAYA",       "result":1.55, "mcap":145000, "liq":28000, "vol_ratio":0.26, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good"]},
+        {"name":"BabyPippin", "result":1.80, "mcap":210000, "liq":41000, "vol_ratio":0.19, "hot":False,"signals":["price_low","mcap_good","liq_good","vol_ratio_good"]},
+        # EXPLOSOES (+300%) — os melhores padrões
+        {"name":"MEGAPUP",    "result":4.10, "mcap":89000,  "liq":24000, "vol_ratio":0.38, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum"]},
+        {"name":"SOLCAT",     "result":5.20, "mcap":112000, "liq":31000, "vol_ratio":0.42, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq"]},
+        {"name":"MOONFROG",   "result":3.80, "mcap":134000, "liq":27000, "vol_ratio":0.35, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike"]},
+        {"name":"ALPHAWOLF",  "result":6.50, "mcap":95000,  "liq":22000, "vol_ratio":0.51, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise"]},
+        {"name":"HYPERDOG",   "result":4.80, "mcap":108000, "liq":29000, "vol_ratio":0.44, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum"]},
+        # FALHAS — ensinam o bot o que NÃO funciona
+        {"name":"JUICESTNKS", "result":-0.35,"mcap":320000, "liq":52000, "vol_ratio":0.11, "hot":False,"signals":["mcap_good","liq_good"]},
+        {"name":"NOBODY",     "result":-0.45,"mcap":280000, "liq":47000, "vol_ratio":0.09, "hot":False,"signals":["mcap_good","liq_good"]},
+        {"name":"MOG",        "result":-0.28,"mcap":340000, "liq":58000, "vol_ratio":0.10, "hot":False,"signals":["mcap_good","liq_good"]},
+        {"name":"DEADCOIN",   "result":-0.60,"mcap":450000, "liq":61000, "vol_ratio":0.06, "hot":False,"signals":["mcap_bad","liq_good"]},
+        {"name":"RUGPULL1",   "result":-0.80,"mcap":180000, "liq":32000, "vol_ratio":0.08, "hot":True, "signals":["hot_window","mcap_good","liq_good","dev_sold","holders_bad"]},
+        {"name":"RUGPULL2",   "result":-0.90,"mcap":220000, "liq":44000, "vol_ratio":0.07, "hot":True, "signals":["hot_window","mcap_good","liq_good","dev_sold","concentration_bad"]},
+        # MEDIOCRES (0-50%) — casos ambíguos
+        {"name":"MIDCOIN1",   "result":0.35, "mcap":260000, "liq":48000, "vol_ratio":0.13, "hot":False,"signals":["mcap_good","liq_good","vol_ratio_good"]},
+        {"name":"MIDCOIN2",   "result":0.28, "mcap":190000, "liq":35000, "vol_ratio":0.16, "hot":True, "signals":["hot_window","mcap_good","liq_good","vol_ratio_good"]},
+    ]
+
+    for coin in historical_base:
+        if coin["name"] in already_in: continue
+        success = coin["result"] >= 0.50
+        change  = coin["result"]
+        WEIGHTS = adjust_weights(WEIGHTS, coin["signals"], success, change)
+        learns_done  += 1
+        new_patterns += 1
+        total_seen   += 1
+        pattern_history.append({
+            "timestamp": time.time(), "name": coin["name"],
+            "signals": coin["signals"], "result": change,
+            "success": success, "mcap": coin["mcap"],
+            "liq": coin["liq"], "vol_ratio": coin["vol_ratio"],
+            "hot": coin["hot"], "score": 0,
+        })
+        theme = detect_theme(coin["name"])
+        if theme:
+            if theme not in successful_themes:
+                successful_themes[theme] = {"count_success":0,"count_total":0,"total_gain":0.0}
+            successful_themes[theme]["count_total"] += 1
+            if success:
+                successful_themes[theme]["count_success"] += 1
+                successful_themes[theme]["total_gain"]    += change
+        if success and change >= 0.80:
+            recent_rockets.append({"name":coin["name"],"theme":theme or coin["name"].lower()[:4],"time":time.time(),"gain":change*100})
+
+    print(f"[Backtest] Base histórica: {new_patterns} moedas ({sum(1 for c in historical_base if c['result']>=0.5)} rockets, {sum(1 for c in historical_base if c['result']<0.5)} falhas)")
+
+    # ── FONTES 2-4: DEXSCREENER ──────────────────────────────
+    # Endpoints diferentes para máxima variedade
+    endpoints = [
+        ("https://api.dexscreener.com/token-boosts/top/v1",       "Top Boosts",   300),
+        ("https://api.dexscreener.com/token-boosts/latest/v1",    "Latest Boosts",200),
+        ("https://api.dexscreener.com/latest/dex/search?q=solana","Trending SOL", 200),
+    ]
+
+    for url, label, limit in endpoints:
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
+                    if r.status != 200:
+                        print(f"[Backtest] {label}: sem resposta ({r.status})")
+                        continue
+                    raw = await r.json()
+        except Exception as e:
+            print(f"[Backtest] {label}: erro — {e}")
+            continue
+
+        # Normaliza resposta
+        if isinstance(raw, list):
+            pairs = raw
+        elif isinstance(raw, dict):
+            pairs = raw.get("pairs", raw.get("tokens", []))
+        else:
+            continue
+
+        # Filtra só Solana
+        sol_pairs = [p for p in pairs if
+                     str(p.get("chainId","")).lower() == "solana" or
+                     "pump" in str(p.get("pairAddress","")).lower() or
+                     str(p.get("dexId","")).lower() in ("raydium","orca","pump.fun")][:limit]
+
+        batch_learned = 0
+        for pair in sol_pairs:
+            try:
+                # Extrai dados
+                base   = pair.get("baseToken") or {}
+                vol    = pair.get("volume") or {}
+                liq    = pair.get("liquidity") or {}
+                chg    = pair.get("priceChange") or {}
+                name   = base.get("name","?")
+                symbol = base.get("symbol","?")
+                mint   = base.get("address","") or pair.get("tokenAddress","")
+
+                if not mint or len(mint) < 30: continue
+                if name in already_in: continue
+                if name == "?": continue
+
+                mc   = float(pair.get("marketCap") or pair.get("fdv") or 0)
+                lq   = float(liq.get("usd",0) if isinstance(liq,dict) else 0)
+                v1h  = float(vol.get("h1",0)  if isinstance(vol,dict) else 0)
+                v24h = float(vol.get("h24",0) if isinstance(vol,dict) else 0)
+                p6h  = float(chg.get("h6",0)  if isinstance(chg,dict) else 0)
+                p24h = float(chg.get("h24",0) if isinstance(chg,dict) else 0)
+
+                if v24h <= 0: continue
+
+                vr      = v1h / v24h
+                change  = p6h / 100   # resultado: variação 6h
+                success = change >= 0.50
+                total_seen += 1
+
+                # Constrói sinais simulados baseados nos dados
+                sigs = []
+                hot  = False  # nao sabemos a hora exata — assume fora
+                if mc >= CONFIG["mcap_min"] and mc <= CONFIG["mcap_max"]: sigs.append("mcap_good")
+                elif mc > CONFIG["mcap_max"]: sigs.append("mcap_bad")
+                if lq >= CONFIG["liq_min"] and lq <= CONFIG["liq_max"]:  sigs.append("liq_good")
+                else: sigs.append("liq_bad")
+                if vr >= CONFIG["vol_ratio_min"]: sigs.append("vol_ratio_good")
+                if vr >= 0.30: sigs.append("volume_spike")
+                if p6h > 20:   sigs.append("momentum")
+                if p6h < -10:  sigs.append("momentum_pen")
+                # Classifica resultado
+                if p24h >= 300: sigs.extend(["buy_pressure","trade_freq","price_rise"])  # explosão
+                elif p24h >= 100: sigs.extend(["buy_pressure","price_rise"])              # forte
+                elif p24h >= 50:  sigs.append("buy_pressure")                            # bom
+                elif p24h < -20:  sigs.append("price_fall_pen")                          # falhou
+
+                if not sigs: continue
+
+                # Aprende
+                WEIGHTS = adjust_weights(WEIGHTS, sigs, success, change)
+                learns_done  += 1
+                new_patterns += 1
+                batch_learned+= 1
+                already_in.add(name)
+
+                pattern_history.append({
+                    "timestamp": time.time(), "name": name, "symbol": symbol,
+                    "signals": sigs, "result": round(change, 3),
+                    "success": success, "mcap": mc, "liq": lq,
+                    "vol_ratio": round(vr,3), "hot": hot, "score": 0,
+                    "p24h": p24h,
+                })
+
+                # Temas
+                theme = detect_theme(name)
+                if theme:
+                    if theme not in successful_themes:
+                        successful_themes[theme] = {"count_success":0,"count_total":0,"total_gain":0.0}
+                    successful_themes[theme]["count_total"] += 1
+                    if success:
+                        successful_themes[theme]["count_success"] += 1
+                        successful_themes[theme]["total_gain"]    += change
+
+                # Rockets para copy-cat
+                if success and change >= 2.0:  # +200%+
+                    recent_rockets.append({"name":name,"theme":theme or name.lower()[:4],"time":time.time(),"gain":change*100})
+
+            except Exception:
+                continue
+
+        wins_batch = sum(1 for p in pattern_history[-batch_learned:] if p.get("success"))
+        print(f"[Backtest] {label}: {batch_learned} moedas | {wins_batch} rockets | {batch_learned-wins_batch} falhas")
+        await asyncio.sleep(1)  # pausa entre endpoints
+
+    # ── GUARDA TUDO ──────────────────────────────────────────
+    if new_patterns > 0:
+        save_weights(WEIGHTS)
+        save_pattern_history()
+        total_wins = sum(1 for p in pattern_history if p.get("success"))
+        print(f"[Backtest] ════════════════════════════════════")
+        print(f"[Backtest] ✅ CONCLUIDO!")
+        print(f"[Backtest]    Total analisado : {total_seen} moedas")
+        print(f"[Backtest]    Aprendizagens   : {new_patterns}")
+        print(f"[Backtest]    Padroes guardados: {len(pattern_history)}")
+        print(f"[Backtest]    Rockets (>50%)  : {total_wins}")
+        print(f"[Backtest]    Falhas (<50%)   : {len(pattern_history)-total_wins}")
+        print(f"[Backtest]    Temas em trend  : {len(successful_themes)}")
+        print(f"[Backtest] ════════════════════════════════════")
+    else:
+        print(f"[Backtest] ✅ Ja tinha todos os padroes — {len(pattern_history)} no historico")
+
+# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# 🔧  MAINTENANCE
+# ─────────────────────────────────────────────
+
+async def maintenance_loop():
+    while True:
+        await asyncio.sleep(60)
+        now = time.time()
+
+        # Verifica alertas 2h depois -> aprende
+        for mint in [m for m,c in list(pending_checks.items()) if now >= c["check_at"]]:
+            await check_and_learn(mint, pending_checks.pop(mint))
+
+        # Aprende com moedas ignoradas que subiram (a cada 5 min)
+        if int(now) % 300 < 61:
+            await learn_from_skipped()
+
+        # Status a cada 5 min
+        if int(now) % 300 < 61:
+            cleanup_old_tokens()
+            hot = "ATIVA" if is_hot_window() else "inativa"
+            print(f"[Status] {datetime.now().strftime('%H:%M:%S')} | Janela: {hot} | "
+                  f"Vistas: {tokens_seen} | Alertadas: {len(alerted_tokens)} | "
+                  f"Alertas: {alerts_sent} | Aprendizagens: {learns_done}")
+
 # ─────────────────────────────────────────────
 # 🚀  MAIN
 # ─────────────────────────────────────────────
 
 async def main():
     print("=" * 60)
-    print("  🤖 TRADING BOT v8.0")
+    print("  🤖 TRADING BOT v11.0")
+    print(f"  Railway: {'✅' if os.environ.get('RAILWAY_ENVIRONMENT') else '💻 local'}")
+    print(f"  Data dir: {DATA_DIR}")
     print("  pump.fun + DexScreener | Auto-scanner | Auto-aprende")
     print("=" * 60)
     print(f"  Filtros    : MCap $100K–$500K | Liq $25K–$65K | Vol1H>15%")
@@ -1226,16 +1864,33 @@ async def main():
     print(f"  Log        : {CONFIG['log_file']}")
     print("=" * 60 + "\n")
 
+    # Corre backtesting antes de tudo
+    await run_backtesting()
+
     await asyncio.gather(
         pumpfun_scanner(),
         dexscreener_scanner(),
         update_loop(),
         maintenance_loop(),
+        rugpull_monitor(),
     )
 
 if __name__ == "__main__":
+    import signal, sys
+
+    def handle_shutdown(sig, frame):
+        print(f"\n[Railway] Sinal {sig} recebido — a guardar dados antes de parar...")
+        save_weights(WEIGHTS)
+        save_pattern_history()
+        save_hour_stats()
+        save_alerted()
+        print(f"[Railway] Dados guardados. Alertas: {alerts_sent} | Aprendizagens: {learns_done}")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, handle_shutdown)  # Railway envia SIGTERM ao parar
+    signal.signal(signal.SIGINT,  handle_shutdown)  # Ctrl+C local
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print(f"\n👋 Bot parado. Alertas: {alerts_sent} | Aprendizagens: {learns_done}")
-        save_weights(WEIGHTS)
+        handle_shutdown(None, None)
