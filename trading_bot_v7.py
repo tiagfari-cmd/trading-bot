@@ -140,7 +140,17 @@ def adjust_weights(weights, active_signals, success, change_pct=0):
 
 WEIGHTS        = load_weights()
 token_data     = {}
-alerted_tokens = set()   # ← NUNCA repete o mesmo token
+# Carrega tokens já alertados de ficheiro para persistir entre reinicios
+ALERTED_FILE = "alertados.json"
+def load_alerted():
+    if os.path.exists(ALERTED_FILE):
+        try: return set(json.load(open(ALERTED_FILE)))
+        except: pass
+    return set()
+def save_alerted():
+    json.dump(list(alerted_tokens), open(ALERTED_FILE, "w"))
+
+alerted_tokens = load_alerted()  # ← NUNCA repete, mesmo após reiniciar
 
 # ── BLACKLIST — moedas já conhecidas/que já explodiram ────────
 # Estas moedas nunca serão alertadas (já atingiram o seu pico)
@@ -652,31 +662,21 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
 
 
 
+    janela   = "🟢 janela ativa" if is_hot_window() else "⚪ fora janela"
+    mcap_str = f"${mcap/1000:.0f}K" if mcap else "N/A"
+    liq_str  = f"${liq/1000:.0f}K" if liq else "N/A"
+    dex_url  = f"https://dexscreener.com/solana/{mint}"
+
     embed = {
         "title":       f"{icon} {cat} — {d.get('name','?')} | {d.get('symbol','?')}",
-        "description": f"{analysis['verdict']}\n🔵 Fonte: {source}",
-        "color":       color,
-        "fields": [
-            # Linha 1: métricas principais
-            {"name": "💲 Preço",      "value": f"`${price:.8f}`",                              "inline": True},
-            {"name": "📊 Score",      "value": f"**{analysis['score']}%**",                    "inline": True},
-            {"name": "🕐 Janela",     "value": "🟢 23h–03h" if is_hot_window() else "⚪ fora", "inline": True},
-            # Linha 2: market cap, liq, vol
-            {"name": "💎 Market Cap", "value": f"${mcap/1000:.0f}K" if mcap else "N/A",        "inline": True},
-            {"name": "💧 Liquidez",   "value": f"${liq/1000:.0f}K" if liq else "N/A",          "inline": True},
-            {"name": "📈 Vol1H/24H",  "value": ratio,                                          "inline": True},
-            # Linha 3: buys/sells, hora, aprendizagens
-            {"name": "🛒 Buys/Sells", "value": f"{d['buy_count']} / {d['sell_count']}",        "inline": True},
-            {"name": "⏱️ Hora",       "value": datetime.now().strftime("%H:%M:%S"),            "inline": True},
-            {"name": "🧠 Aprend.",    "value": str(learns_done),                               "inline": True},
-            # Sinais
-            {"name": "🔍 Sinais",     "value": "\n".join(analysis["signals"])[:1000],         "inline": False},
-            # CA limpo — copia e cola diretamente nas plataformas
-            {"name": "📋 CA",
-             "value": mint,
-             "inline": False},
-        ],
-        "footer":    {"text": f"Trading Bot v8.0 • Alerta #{alerts_sent+1} • Verifica resultado em 2h"},
+        "description": (
+            f"**💲** `${price:.8f}`  **📊** {analysis['score']}%  **🕐** {janela}\n"
+            f"**💎** {mcap_str}  **💧** {liq_str}  **📈** {ratio}\n"
+            f"\n[Chart — abre DexScreener e copia o CA aqui]({dex_url})"
+        ),
+        "color": color,
+        "fields": [],
+        "footer":    {"text": f"Trading Bot v8.0 • Alerta #{alerts_sent+1} • Fonte: {source}"},
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -941,6 +941,7 @@ async def process_trade(msg, source="pump.fun"):
 
         # ── MARCA COMO ALERTADO — nunca mais repete ──
         alerted_tokens.add(mint)
+        save_alerted()
 
         print_alert(mint, analysis, price, source)
         log_alert(mint, analysis, price, source)
