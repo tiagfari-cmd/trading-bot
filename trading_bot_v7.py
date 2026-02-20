@@ -1,7 +1,7 @@
 """
 =============================================================
-  Bot de Sinais de Trading v7.0
-  AUTO-SCANNER + AUTO-APRENDE + DEXSCREENER + MARKET CAP
+  Bot de Sinais de Trading v8.0
+  AUTO-SCANNER + AUTO-APRENDE + HELIUS + DEXSCREENER
 =============================================================
 
 NOVIDADES v7 (baseadas em análise de 11+ moedas reais):
@@ -34,9 +34,8 @@ from collections import deque
 # ⚙️  CONFIGURAÇÃO
 # ─────────────────────────────────────────────
 
-import os
-
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
+HELIUS_API_KEY      = os.environ.get("HELIUS_API_KEY", "COLA_AQUI_A_TUA_HELIUS_KEY")
 
 CONFIG = {
     "min_confidence":      55,
@@ -53,6 +52,9 @@ CONFIG = {
     "success_threshold":   0.50,
     "update_interval":    1200,    # 20 minutos
     "dexscreener_poll":     30,    # polling DexScreener
+    # Updates por milestone em vez de tempo fixo
+    "milestones":     [0.25, 0.50, 1.00, 2.00, 5.00],  # +25%, +50%, +100%, +200%, +500%
+    "drop_alert_pct": -0.20,   # avisa se cair -20% desde o pico
 
     # ── NOVOS FILTROS v7 (baseados nos prints do GEM HUNTERS) ──
     "mcap_min":        80_000,   # Market Cap mínimo $80K (Lupe tinha $96K → +114%)
@@ -85,6 +87,14 @@ DEFAULT_WEIGHTS = {
     "liq_good":        15.0,    # liquidez ideal
     "liq_bad":        -15.0,    # liquidez fora do range
     "vol_ratio_good":  20.0,    # ratio vol1h/24h forte
+    # Novos pesos v8 — Helius (holders, dev, concentração)
+    "holders_good":    20.0,    # >100 holders = mais seguro
+    "holders_bad":    -20.0,    # <50 holders = risco rugpull
+    "dev_sold":       -35.0,    # dev vendeu tudo = sinal muito negativo
+    "dev_holds":       15.0,    # dev ainda tem tokens = confiança
+    "concentration_ok": 15.0,  # top 10 holders < 30% = saudável
+    "concentration_bad":-25.0, # top 10 holders > 50% = risco dump
+    "buy_sell_5m":     25.0,    # ratio compras/vendas em 5min forte
 }
 
 def load_weights():
@@ -174,6 +184,11 @@ def init_token(mint):
             "first_trade_time": None,
             "peak_price":       0,
             "source":           "unknown",
+            # Campos Helius v8
+            "holders":          0,
+            "top10_pct":        0,
+            "dev_still_holds":  None,
+            "dev_pct":          0,
             # Novos campos v7
             "market_cap":       0,
             "liquidity":        0,
@@ -370,6 +385,35 @@ def calculate_confidence(mint):
                 pts = min(int(w["trade_freq"]), int(tps*8)); score += pts
                 signals.append(f"⚡ Freq: {tps:.2f}/s (+{pts}pts)"); active.append("trade_freq")
 
+    # 8b. Helius — holders, dev, concentração
+    holders   = d.get("holders", 0)
+    top10_pct = d.get("top10_pct", 0)
+    dev_holds = d.get("dev_still_holds", None)
+
+    if holders > 0:
+        if holders >= 100:
+            pts = int(w["holders_good"]); score += pts
+            signals.append(f"👥 Holders: {holders} — seguro (+{pts}pts)"); active.append("holders_good")
+        elif holders < 50:
+            score += int(w["holders_bad"])
+            signals.append(f"👥 Holders: {holders} — risco rugpull ({w['holders_bad']:.0f}pts)"); active.append("holders_bad")
+
+    if top10_pct > 0:
+        if top10_pct <= 30:
+            pts = int(w["concentration_ok"]); score += pts
+            signals.append(f"📊 Top10: {top10_pct:.0f}% — concentração saudável (+{pts}pts)"); active.append("concentration_ok")
+        elif top10_pct > 50:
+            score += int(w["concentration_bad"])
+            signals.append(f"📊 Top10: {top10_pct:.0f}% — muito concentrado ({w['concentration_bad']:.0f}pts)"); active.append("concentration_bad")
+
+    if dev_holds is not None:
+        if dev_holds:
+            pts = int(w["dev_holds"]); score += pts
+            signals.append(f"👨‍💻 Dev ainda tem tokens (+{pts}pts)"); active.append("dev_holds")
+        else:
+            score += int(w["dev_sold"])
+            signals.append(f"👨‍💻 Dev já vendeu ({w['dev_sold']:.0f}pts) ⚠️"); active.append("dev_sold")
+
     score = max(0, min(100, score))
     if   score >= 70 and in_hot: cat, v = "ROCKET", "🟢 ROCKET — alto potencial"
     elif score >= 55:             cat, v = "BOM",    "🟡 BOM SINAL — potencial moderado"
@@ -422,6 +466,73 @@ async def enrich_token_from_dex(mint):
     if data["symbol"]:         d["symbol"]      = data["symbol"]
 
 # ─────────────────────────────────────────────
+# 🔬  HELIUS — holders, dev wallet, concentração
+# ─────────────────────────────────────────────
+
+async def fetch_helius_data(mint):
+    """
+    Busca dados avançados via Helius API:
+    - Número de holders
+    - Se o dev ainda tem tokens
+    - Concentração dos top holders
+    Usado para afinar os pesos automaticamente — não mostrado ao utilizador.
+    """
+    if "COLA" in HELIUS_API_KEY: return None
+    try:
+        async with aiohttp.ClientSession() as s:
+            # Busca top holders
+            url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+            payload = {
+                "jsonrpc": "2.0", "id": 1,
+                "method": "getTokenAccounts",
+                "params": {
+                    "mint": mint,
+                    "limit": 20,
+                    "options": {"showZeroBalance": False}
+                }
+            }
+            async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status != 200: return None
+                data    = await r.json()
+                accounts = data.get("result", {}).get("token_accounts", [])
+                if not accounts: return None
+
+                total_holders = len(accounts)
+                # Calcula concentração dos top 10
+                amounts  = sorted([float(a.get("amount", 0)) for a in accounts], reverse=True)
+                total_supply = sum(amounts) or 1
+                top10_pct    = sum(amounts[:10]) / total_supply * 100
+
+                # Verifica se o dev (primeiro criador) ainda tem tokens
+                # O dev normalmente é o maior holder inicial
+                dev_amount = amounts[0] if amounts else 0
+                dev_pct    = dev_amount / total_supply * 100
+                # Se o maior holder tem < 1% provavelmente o dev já vendeu
+                dev_still_holds = dev_pct >= 2.0
+
+                return {
+                    "holders":        total_holders,
+                    "top10_pct":      top10_pct,
+                    "dev_still_holds": dev_still_holds,
+                    "dev_pct":        dev_pct,
+                }
+    except Exception as e:
+        print(f"[Helius] ⚠️ {e}")
+        return None
+
+async def enrich_token_helius(mint):
+    """Enriquece token com dados Helius para afinação automática."""
+    data = await fetch_helius_data(mint)
+    if not data: return
+    d = token_data.get(mint)
+    if not d: return
+    d["holders"]         = data["holders"]
+    d["top10_pct"]       = data["top10_pct"]
+    d["dev_still_holds"] = data["dev_still_holds"]
+    d["dev_pct"]         = data["dev_pct"]
+    print(f"[Helius] {d.get('name','?')} — {data['holders']} holders | top10: {data['top10_pct']:.0f}% | dev: {'✅' if data['dev_still_holds'] else '❌ vendeu'}")
+
+# ─────────────────────────────────────────────
 # 🧠  APRENDIZAGEM (2h depois)
 # ─────────────────────────────────────────────
 
@@ -472,6 +583,16 @@ async def check_and_learn(mint, check_data):
             diagnosis.append(("vol_ratio_good", "Vol1H/24H baixo → momentum fraco"))
         if not alert_in_hot:
             diagnosis.append(("hot_window", "Fora da janela 23h–03h"))
+        # Diagnóstico Helius
+        alert_holders  = check_data.get("alert_holders", 0)
+        alert_top10    = check_data.get("alert_top10_pct", 0)
+        alert_dev      = check_data.get("alert_dev_holds", None)
+        if alert_holders > 0 and alert_holders < 50:
+            diagnosis.append(("holders_bad", f"Poucos holders ({alert_holders}) → fácil manipular"))
+        if alert_top10 > 50:
+            diagnosis.append(("concentration_bad", f"Top10 muito concentrado ({alert_top10:.0f}%) → risco dump"))
+        if alert_dev is False:
+            diagnosis.append(("dev_sold", "Dev já tinha vendido → sinal negativo confirmado"))
         if change < -0.1:
             # Caiu mesmo → todos os sinais ativos são suspeitos
             for sig in active:
@@ -555,7 +676,7 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
              "value": mint,
              "inline": False},
         ],
-        "footer":    {"text": f"Trading Bot v7.0 • Alerta #{alerts_sent+1} • Verifica resultado em 2h"},
+        "footer":    {"text": f"Trading Bot v8.0 • Alerta #{alerts_sent+1} • Verifica resultado em 2h"},
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -573,47 +694,141 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
 # 📊  DISCORD — ATUALIZAÇÃO 20 MINUTOS
 # ─────────────────────────────────────────────
 
-async def send_discord_update(mint, alert_data):
+def calc_sell_probability(mint, dex, pct):
+    """
+    Calcula probabilidade de continuar a subir ou corrigir.
+    Baseado em sinais técnicos reais — não é garantia, é orientação.
+    """
+    d = token_data.get(mint, {})
+    warnings  = []
+    positives = []
+    risk_score = 0  # quanto maior, maior risco de correção
+
+    # 1. Volume a cair?
+    vols = list(d.get("volumes", []))
+    if len(vols) >= 6:
+        recent_vol = sum(vols[-3:]) / 3
+        older_vol  = sum(vols[-6:-3]) / 3
+        if older_vol > 0:
+            vol_trend = recent_vol / older_vol
+            if vol_trend < 0.6:
+                risk_score += 25
+                warnings.append("📉 Volume a cair nas últimas atualizações")
+            elif vol_trend > 1.3:
+                risk_score -= 15
+                positives.append("📈 Volume a crescer — momentum continua")
+
+    # 2. Ratio compras/vendas atual
+    buys  = d.get("buy_count", 0)
+    sells = d.get("sell_count", 0)
+    total = buys + sells
+    if total > 0:
+        ratio = buys / total
+        if ratio < 0.45:
+            risk_score += 30
+            warnings.append(f"🔴 Vendas dominam: {ratio*100:.0f}% compras")
+        elif ratio < 0.55:
+            risk_score += 10
+            warnings.append(f"⚠️ Pressão de venda a aumentar: {ratio*100:.0f}% compras")
+        else:
+            risk_score -= 10
+            positives.append(f"✅ Compras ainda dominam: {ratio*100:.0f}%")
+
+    # 3. Dev vendeu?
+    if d.get("dev_still_holds") is False:
+        risk_score += 30
+        warnings.append("⚠️ Dev já vendeu os tokens")
+    elif d.get("dev_still_holds") is True:
+        risk_score -= 10
+        positives.append("✅ Dev ainda tem tokens")
+
+    # 4. Concentração de holders
+    top10 = d.get("top10_pct", 0)
+    if top10 > 50:
+        risk_score += 25
+        warnings.append(f"⚠️ Top 10 holders têm {top10:.0f}% — risco dump")
+    elif top10 > 0 and top10 <= 30:
+        risk_score -= 10
+        positives.append(f"✅ Distribuição saudável ({top10:.0f}%)")
+
+    # 5. Já subiu muito? Quanto mais subiu, maior risco de correção
+    if pct >= 200:
+        risk_score += 30
+        warnings.append("⚠️ Já subiu muito (+200%) — possível correção")
+    elif pct >= 100:
+        risk_score += 15
+        warnings.append("⚠️ Subida grande (+100%) — considera realizar lucro")
+    elif pct >= 50:
+        risk_score += 5
+
+    # 6. DexScreener — liquidez atual vs alerta
+    if dex:
+        curr_liq = dex.get("liquidity", 0)
+        if curr_liq > 0 and curr_liq < 15000:
+            risk_score += 20
+            warnings.append("⚠️ Liquidez muito baixa — difícil vender")
+
+    # Calcula probabilidade final
+    risk_score = max(0, min(100, risk_score))
+    prob_subir  = max(5,  min(95, 100 - risk_score))
+    prob_corrig = max(5,  min(95, risk_score))
+
+    return prob_subir, prob_corrig, warnings, positives
+
+async def send_discord_movement(mint, alert_data, current_price, pct, direction, milestone, dex=None):
+    """Envia alerta apenas quando há movimento significativo de preço."""
     if "COLA" in DISCORD_WEBHOOK_URL: return
 
     alert_price = alert_data["alert_price"]
-    name        = alert_data["name"]
+    name        = alert_data.get("name", "?")
+    elapsed     = int((time.time() - alert_data["alert_time"]) / 60)
 
-    dex = await fetch_dexscreener(mint)
-    current_price = (dex["price"] if dex and dex["price"] > 0 else None)
-    if not current_price and mint in token_data:
-        prices = list(token_data[mint]["prices"])
-        if prices: current_price = prices[-1]
-    if not current_price or alert_price <= 0: return
+    if direction == "up":
+        if   milestone >= 200: title = f"🚀🚀🚀 {name} — +{milestone}% ATINGIDO!"
+        elif milestone >= 100: title = f"🚀🚀 {name} — +{milestone}% ATINGIDO!"
+        elif milestone >= 50:  title = f"🚀 {name} — +{milestone}% ATINGIDO!"
+        else:                  title = f"📈 {name} — +{milestone}%"
+        color = 0x00ff88
+    else:
+        if   milestone >= 40: title = f"🔴🔴 {name} — QUEDA -{milestone}%! CONSIDERA SAIR"
+        else:                 title = f"🔴 {name} — caiu -{milestone}%"
+        color = 0xff3355
 
-    change  = (current_price - alert_price) / alert_price
-    pct     = change * 100
-    arrow   = "📈" if change >= 0 else "📉"
-    color   = 0x00ff88 if change >= 0.5 else (0xffd447 if change >= 0 else 0xff3d5a)
-    elapsed = int((time.time() - alert_data["alert_time"]) / 60)
+    # Calcula probabilidade
+    prob_up, prob_down, warnings, positives = calc_sell_probability(mint, dex, pct)
 
-    if   pct >= 100: status = "🚀🚀 MAIS QUE DOBROU!"
-    elif pct >=  50: status = "🚀 +50% ATINGIDO!"
-    elif pct >=  20: status = "📈 A subir bem"
-    elif pct >=   0: status = "➡️ Estável"
-    elif pct >= -20: status = "⚠️ A cair"
-    else:            status = "🔴 Queda significativa"
+    if prob_down >= 70:   rec = "🔴 CONSIDERA VENDER AGORA"
+    elif prob_down >= 50: rec = "🟡 CUIDADO — risco elevado"
+    else:                 rec = "🟢 AGUENTA — sinais positivos"
+
+    analysis_lines = []
+    if warnings:
+        analysis_lines.append("**⚠️ Sinais de alerta:**")
+        analysis_lines.extend([f"• {w}" for w in warnings])
+    if positives:
+        analysis_lines.append("**✅ Sinais positivos:**")
+        analysis_lines.extend([f"• {p}" for p in positives])
+    if not warnings and not positives:
+        analysis_lines.append("• Sem sinais claros — mantém atenção")
+    analysis_text = "\n".join(analysis_lines)[:1000]
+
+    dex_url = f"https://dexscreener.com/solana/{mint}"
 
     embed = {
-        "title":       f"{arrow} Update 20min — {name}",
-        "description": status,
+        "title":       title,
         "color":       color,
         "fields": [
-            {"name": "💲 Preço alerta", "value": f"`${alert_price:.8f}`",   "inline": True},
-            {"name": "💲 Preço atual",  "value": f"`${current_price:.8f}`", "inline": True},
-            {"name": "📊 Variação",     "value": f"**{pct:+.1f}%**",        "inline": True},
-            {"name": "⏱️ Desde alerta", "value": f"{elapsed} min",          "inline": True},
-            # CA limpo para copy-paste
-            {"name": "📋 CA",
-             "value": mint,
-             "inline": False},
+            {"name": "💲 Preço alerta",    "value": f"`${alert_price:.8f}`",   "inline": True},
+            {"name": "💲 Preço atual",     "value": f"`${current_price:.8f}`", "inline": True},
+            {"name": "📊 Variação total",  "value": f"**{pct:+.1f}%**",        "inline": True},
+            {"name": "⏱️ Desde alerta",    "value": f"{elapsed} min",          "inline": True},
+            {"name": "🟢 Prob. continuar", "value": f"**{prob_up}%**",         "inline": True},
+            {"name": "🔴 Prob. corrigir",  "value": f"**{prob_down}%**",       "inline": True},
+            {"name": rec,                  "value": analysis_text,              "inline": False},
+            {"name": "📋 CA",              "value": f"`{mint}`",               "inline": False},
+            {"name": "🔗 Chart",           "value": f"[Abre no DexScreener]({dex_url})", "inline": False},
         ],
-        "footer":    {"text": "Trading Bot v7.0 • update automático 20min"},
+        "footer":    {"text": f"Trading Bot v8.0 • {trigger_label} • probabilidades são orientação"},
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -621,9 +836,9 @@ async def send_discord_update(mint, alert_data):
         async with aiohttp.ClientSession() as s:
             await s.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]},
                          timeout=aiohttp.ClientTimeout(total=5))
-            print(f"[Update 20min] {name}: {pct:+.1f}%")
+            print(f"[Movimento] {name}: {pct:+.1f}% (milestone {direction} {milestone}%) | prob corrigir: {prob_down}%")
     except Exception as e:
-        print(f"[Update] ❌ {e}")
+        print(f"[Movimento] ❌ {e}")
 
 # ─────────────────────────────────────────────
 # 💾  LOG / TERMINAL
@@ -688,6 +903,8 @@ async def process_trade(msg, source="pump.fun"):
         print(f"  [novo #{tokens_seen}] {msg.get('name','?')} via {source}")
         # Busca dados do DexScreener para ter mcap/liq/vol desde o início
         asyncio.create_task(enrich_token_from_dex(mint))
+        # Busca dados Helius para holders/dev/concentração
+        asyncio.create_task(enrich_token_helius(mint))
 
     if "name"   in msg: d["name"]   = msg["name"]
     if "symbol" in msg: d["symbol"] = msg["symbol"]
@@ -742,6 +959,14 @@ async def process_trade(msg, source="pump.fun"):
             "alert_in_hot":    is_hot_window(),
             "alert_score":     analysis["score"],
             "alert_category":  analysis.get("category","?"),
+            # Dados Helius para diagnóstico
+            "alert_holders":   d.get("holders", 0),
+            "alert_top10_pct": d.get("top10_pct", 0),
+            "alert_dev_holds": d.get("dev_still_holds", None),
+            # Tracking de milestones
+            "milestones_hit":  set(),
+            "peak_change":     0,
+            "drop_alerted_at": None,
         }
 
 # ─────────────────────────────────────────────
@@ -813,15 +1038,63 @@ async def dexscreener_scanner():
 # ─────────────────────────────────────────────
 
 async def update_loop():
-    """Atualização a cada 20 minutos para moedas alertadas."""
-    await asyncio.sleep(CONFIG["update_interval"])
+    """
+    Monitoriza preço de cada alerta a cada 30s.
+    Só avisa quando há movimento significativo:
+    SOBE → avisa em +25%, +50%, +100%, +200%
+    DESCE → avisa em -20% e -40%, depois SILENCIA até superar o pico anterior
+    """
     while True:
-        if pending_checks:
-            print(f"[Update 20min] {len(pending_checks)} moeda(s) para atualizar...")
-            for mint, data in list(pending_checks.items()):
-                await send_discord_update(mint, data)
-                await asyncio.sleep(2)
-        await asyncio.sleep(CONFIG["update_interval"])
+        await asyncio.sleep(30)
+        now = time.time()
+
+        for mint, data in list(pending_checks.items()):
+            alert_price = data["alert_price"]
+
+            # Busca preço atual
+            dex = await fetch_dexscreener(mint)
+            if dex and dex["price"] > 0:
+                current_price = dex["price"]
+            elif mint in token_data:
+                prices = list(token_data[mint]["prices"])
+                current_price = prices[-1] if prices else None
+            else:
+                current_price = None
+            if not current_price: continue
+
+            pct      = (current_price - alert_price) / alert_price * 100
+            peak_pct = data.get("peak_pct", 0)
+            silenced = data.get("silenced", False)
+
+            # Atualiza pico máximo
+            if pct > peak_pct:
+                data["peak_pct"] = pct
+                peak_pct = pct
+                if silenced:
+                    # Superou o último máximo → volta a monitorizar
+                    data["silenced"] = False
+                    silenced = False
+                    print(f"[Monitor] {data.get('name','?')} superou máximo → volta a monitorizar")
+
+            # Milestones de SUBIDA — avisa uma vez cada
+            milestones_up = data.setdefault("milestones_up", set())
+            for milestone in [25, 50, 100, 200]:
+                if pct >= milestone and milestone not in milestones_up:
+                    milestones_up.add(milestone)
+                    await send_discord_movement(mint, data, current_price, pct, "up", milestone, dex)
+
+            # Milestones de DESCIDA — só se não estiver silenciado
+            if not silenced:
+                milestones_down = data.setdefault("milestones_down", set())
+                for milestone in [20, 40]:
+                    if pct <= -milestone and milestone not in milestones_down:
+                        milestones_down.add(milestone)
+                        await send_discord_movement(mint, data, current_price, pct, "down", milestone, dex)
+                        if milestone == 20:
+                            data["silenced"] = True
+                            print(f"[Monitor] {data.get('name','?')} -{milestone}% → silenciado até superar {peak_pct:.0f}%")
+
+            await asyncio.sleep(1)  # pequena pausa entre moedas
 
 async def maintenance_loop():
     while True:
@@ -846,7 +1119,7 @@ async def maintenance_loop():
 
 async def main():
     print("=" * 60)
-    print("  🤖 TRADING BOT v7.0")
+    print("  🤖 TRADING BOT v8.0")
     print("  pump.fun + DexScreener | Auto-scanner | Auto-aprende")
     print("=" * 60)
     print(f"  Filtros    : MCap $100K–$500K | Liq $25K–$65K | Vol1H>15%")
