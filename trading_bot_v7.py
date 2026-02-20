@@ -175,6 +175,12 @@ alerts_sent    = 0
 learns_done    = 0
 pending_checks = {}
 
+# ── APRENDIZAGEM AVANÇADA ─────────────────────────────────────
+# Moedas que o bot viu mas ignorou (para aprender com oportunidades perdidas)
+skipped_coins  = {}   # mint → {price, time, signals_at_skip, score}
+SKIPPED_MAX    = 200  # máximo de moedas ignoradas em memória
+SKIP_CHECK_AFTER = 7200  # verifica 2h depois se subiu
+
 # ─────────────────────────────────────────────
 # 📊  TOKEN DATA
 # ─────────────────────────────────────────────
@@ -578,8 +584,15 @@ async def check_and_learn(mint, check_data):
 
     # ── 2. CALCULA RESULTADO ─────────────────────────────────
     change     = (current_price - alert_price) / alert_price
-    success    = change >= CONFIG["success_threshold"]
+    elapsed_h  = (time.time() - check_data["alert_time"]) / 3600
+
+    # ESTAGNAÇÃO — se passou muito tempo e não subiu 50%, conta como falha
+    # Moeda "morta" que ficou entre -20% e +20% é tão má como uma queda
+    stagnant = (abs(change) < 0.20 and elapsed_h >= 1.5)
+    success  = change >= CONFIG["success_threshold"] and not stagnant
     result_str = f"+{change*100:.1f}%" if change >= 0 else f"{change*100:.1f}%"
+    if stagnant and not success:
+        result_str += " (ESTAGNADA)"
 
     # ── 3. DIAGNÓSTICO — porquê falhou? ─────────────────────
     diagnosis = []
@@ -603,7 +616,10 @@ async def check_and_learn(mint, check_data):
             diagnosis.append(("concentration_bad", f"Top10 muito concentrado ({alert_top10:.0f}%) → risco dump"))
         if alert_dev is False:
             diagnosis.append(("dev_sold", "Dev já tinha vendido → sinal negativo confirmado"))
-        if change < -0.1:
+        if stagnant:
+            diagnosis.append(("momentum", "Moeda estagnada — não subiu após 2h"))
+            diagnosis.append(("vol_ratio_good", "Volume não foi suficiente para mover o preço"))
+        elif change < -0.1:
             # Caiu mesmo → todos os sinais ativos são suspeitos
             for sig in active:
                 if not any(sig == d[0] for d in diagnosis):
@@ -620,7 +636,8 @@ async def check_and_learn(mint, check_data):
 
     # ── 5. LOG ──────────────────────────────────────────────
     icon = "✅" if success else "❌"
-    print(f"\n{'═'*55}")
+    _sep = '═'*55
+    print(f"\n{_sep}")
     print(f"  {icon} [Aprendizagem #{learns_done}] {name} — {result_str}")
     print(f"  Preço alerta: ${alert_price:.8f} → Agora: ${current_price:.8f}")
     if diagnosis:
@@ -630,7 +647,7 @@ async def check_and_learn(mint, check_data):
     changed = {k: f"{old_w[k]:.1f}→{WEIGHTS[k]:.1f}" for k in WEIGHTS if abs(WEIGHTS[k]-old_w[k]) > 0.1}
     if changed:
         print(f"  ⚖️  Pesos ajustados: {changed}")
-    print(f"{'═'*55}\n")
+    print(f"{_sep}\n")
 
     # ── 6. LOG CSV ───────────────────────────────────────────
     with open(CONFIG["log_file"], "a", newline="") as f:
@@ -935,6 +952,25 @@ async def process_trade(msg, source="pump.fun"):
     cat      = analysis.get("category")
     price    = prices[-1] if prices else 0
 
+    # ── GUARDA MOEDAS IGNORADAS para aprender com oportunidades perdidas ──
+    if (cat not in CONFIG["min_category"] or
+            analysis["score"] < CONFIG["min_confidence"] or
+            analysis.get("blocked", False)):
+        # Moeda não passou o filtro — guarda para verificar depois
+        if mint not in skipped_coins and mint not in alerted_tokens and len(skipped_coins) < SKIPPED_MAX:
+            skipped_coins[mint] = {
+                "price":      price,
+                "time":       now,
+                "score":      analysis["score"],
+                "category":   cat,
+                "active":     analysis["active_signals"],
+                "check_at":   now + SKIP_CHECK_AFTER,
+                "name":       d.get("name","?"),
+                "mcap":       d.get("market_cap", 0),
+                "liq":        d.get("liquidity", 0),
+                "vol_ratio":  (d.get("vol_1h",0)/d.get("vol_24h",1)) if d.get("vol_24h",0)>0 else 0,
+            }
+
     if (cat in CONFIG["min_category"] and
             analysis["score"] >= CONFIG["min_confidence"] and
             not analysis.get("blocked", False)):
@@ -1097,7 +1133,61 @@ async def update_loop():
 
             await asyncio.sleep(1)  # pequena pausa entre moedas
 
-async def maintenance_loop():
+async def learn_from_skipped():
+    """
+    Verifica 2h depois moedas que o bot IGNOROU.
+    Se subiram muito, aprende que estava a filtrar errado.
+    Esta é uma das aprendizagens mais valiosas — oportunidades perdidas.
+    """
+    global WEIGHTS, learns_done
+    now      = time.time()
+    to_check = [m for m,d in list(skipped_coins.items()) if now >= d["check_at"]]
+
+    for mint in to_check:
+        data = skipped_coins.pop(mint)
+        skip_price = data["price"]
+        if skip_price <= 0: continue
+
+        dex = await fetch_dexscreener(mint)
+        if not dex or dex["price"] <= 0: continue
+        current_price = dex["price"]
+
+        change     = (current_price - skip_price) / skip_price
+        result_str = f"+{change*100:.1f}%" if change >= 0 else f"{change*100:.1f}%"
+
+        # Só aprende se a moeda subiu muito (o bot perdeu uma oportunidade real)
+        missed_big = change >= 0.80   # subiu mais de 80% e o bot não alertou
+        missed_ok  = change >= 0.40   # subiu mais de 40% e o bot não alertou
+
+        if missed_big or missed_ok:
+            factor     = 0.12 if missed_big else 0.07
+            old_w      = dict(WEIGHTS)
+            # Reforça os sinais que ESTAVAM ATIVOS nessa moeda ignorada
+            # Esses sinais deviam ter dado alerta mas não deram
+            for sig in data["active"]:
+                if sig not in WEIGHTS: continue
+                cur   = WEIGHTS[sig]
+                delta = abs(cur) * factor
+                WEIGHTS[sig] = max(5.0, min(40.0, cur + delta)) if cur > 0 else max(-40.0, min(-5.0, cur - delta))
+
+            # Se o score era perto do mínimo, baixa o mínimo ligeiramente
+            if data["score"] >= CONFIG["min_confidence"] - 10:
+                CONFIG["min_confidence"] = max(45, CONFIG["min_confidence"] - 1)
+
+            save_weights(WEIGHTS)
+            changed = {k: str(round(old_w[k],1))+"->"+str(round(WEIGHTS[k],1)) for k in WEIGHTS if abs(WEIGHTS[k]-old_w[k]) > 0.1}
+            missed_type = "GRANDE OPORTUNIDADE PERDIDA" if missed_big else "Oportunidade perdida"
+            mcap_k = data["mcap"]/1000
+            liq_k  = data["liq"]/1000
+            vr_pct = data["vol_ratio"]*100
+            sep55  = "="*55
+            print("\n" + sep55)
+            print(f"  [Oportunidade Perdida #{learns_done}] {data['name']} -- {result_str}")
+            print(f"  Score na altura: {data['score']}% (minimo era {CONFIG['min_confidence']+1}%)")
+            print(f"  MCap: ${mcap_k:.0f}K | Liq: ${liq_k:.0f}K | Vol: {vr_pct:.0f}%")
+            print(f"  {missed_type} -- bot estava a filtrar errado")
+            if changed: print(f"  Pesos ajustados: {changed}")
+            print(sep55 + "\n")
     while True:
         await asyncio.sleep(60)
         now = time.time()
@@ -1105,6 +1195,10 @@ async def maintenance_loop():
         # Verifica alertas 2h depois → aprende
         for mint in [m for m,c in list(pending_checks.items()) if now >= c["check_at"]]:
             await check_and_learn(mint, pending_checks.pop(mint))
+
+        # Aprende com moedas ignoradas que subiram (a cada 5 min)
+        if int(now) % 300 < 61:
+            await learn_from_skipped()
 
         # Status a cada 5 min
         if int(now) % 300 < 61:
