@@ -64,7 +64,7 @@ CONFIG = {
     # ── NOVOS FILTROS v7 (baseados nos prints do GEM HUNTERS) ──
     "mcap_min":        80_000,   # Market Cap mínimo $80K (Lupe tinha $96K → +114%)
     "mcap_max":       500_000,   # Market Cap máximo $500K
-    "liq_min":         25_000,   # Liquidez mínima $25K
+    "liq_min":         12_000,   # Liquidez mínima $12K (baixado para apanhar moedas cedo)
     "liq_max":         65_000,   # Liquidez máxima $65K
     "vol_ratio_min":    0.15,    # Vol1H/Vol24H mínimo 15%
 }
@@ -90,6 +90,7 @@ DEFAULT_WEIGHTS = {
     "mcap_good":       20.0,
     "mcap_bad":       -20.0,
     "liq_good":        15.0,
+    "liq_growing":      8.0,   # liquidez baixa mas a crescer — moeda cedo
     "liq_bad":        -15.0,
     "vol_ratio_good":  20.0,
     # v8 — Helius
@@ -374,17 +375,25 @@ def check_mcap_liq_vol(mint) -> tuple:
 
     # ── LIQUIDITY ───────────────────────────────
     if liq > 0:
-        if CONFIG["liq_min"] <= liq <= CONFIG["liq_max"]:
+        if 25_000 <= liq <= CONFIG["liq_max"]:
+            # Sweet spot ideal $25K-$65K
             pts = int(w["liq_good"]); score += pts
             signals.append(f"💧 Liquidez ${liq/1000:.0f}K — ideal (+{pts}pts)")
             active.append("liq_good")
+        elif CONFIG["liq_min"] <= liq < 25_000:
+            # Zona cedo $12K-$25K — liquidez baixa mas moeda nova com potencial
+            # Precisa de compensar com outros sinais fortes
+            pts = int(w.get("liq_growing", 8)); score += pts
+            signals.append(f"💧 Liquidez ${liq/1000:.0f}K — cedo, a crescer (+{pts}pts) ⚠️")
+            active.append("liq_growing")
         elif liq > CONFIG["liq_max"]:
             score += int(w["liq_bad"])
             signals.append(f"💧 Liquidez ${liq/1000:.0f}K — alta, já comprado ({w['liq_bad']:.0f}pts)")
             active.append("liq_bad")
         else:
+            # Abaixo de $12K — muito arriscado
             score += int(w["liq_bad"])
-            signals.append(f"💧 Liquidez ${liq/1000:.0f}K — baixa, risco alto ({w['liq_bad']:.0f}pts)")
+            signals.append(f"💧 Liquidez ${liq/1000:.0f}K — muito baixa, risco alto ({w['liq_bad']:.0f}pts)")
             active.append("liq_bad")
 
     # ── RATIO VOL 1H / 24H ──────────────────────
@@ -1304,7 +1313,8 @@ async def process_trade(msg, source="pump.fun"):
 
     hot_now    = is_hot_window()
     # Fora da janela exige score mais alto (mercado mais fraco de dia)
-    min_score  = CONFIG["min_confidence"] if hot_now else CONFIG["min_confidence"] + 10
+    # +12 fora janela para compensar filtro de liquidez mais baixo
+    min_score  = CONFIG["min_confidence"] if hot_now else CONFIG["min_confidence"] + 12
 
     qualifies = (cat in CONFIG["min_category"] and
                  analysis["score"] >= min_score and
