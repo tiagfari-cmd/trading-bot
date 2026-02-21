@@ -92,7 +92,7 @@ DEFAULT_WEIGHTS = {
     "momentum":        20.0,
     "momentum_pen":   -25.0,
     "price_rise":      20.0,
-    "price_fall_pen": -10.0,
+    "price_fall_pen": -20.0,  # aumentado — queda de preço é sinal muito negativo
     "trade_freq":      10.0,
     # v7 — filtros mercado
     "mcap_good":       20.0,
@@ -583,15 +583,38 @@ def calculate_confidence(mint):
                 score += int(w["momentum_pen"])
                 signals.append(f"📉 Momentum a cair ({w['momentum_pen']:.0f}pts)"); active.append("momentum_pen")
 
-    # 7. Subida de preço
+    # 7. Tendência de preço — bloqueia moedas em queda
+    if len(prices) >= 2 and prices[0] > 0:
+        # Tendência geral desde que o bot começou a ver a moeda
+        trend_overall = (prices[-1] - prices[0]) / prices[0]
+    else:
+        trend_overall = 0
+
     if len(prices) >= 4 and prices[-4] > 0:
-        pct = (prices[-1] - prices[-4]) / prices[-4]
-        if pct >= 0.05:
-            pts = min(int(w["price_rise"]), int(pct*150)); score += pts
-            signals.append(f"🚀 Preço +{pct*100:.1f}% (+{pts}pts)"); active.append("price_rise")
-        elif pct <= -0.05:
-            score += int(w["price_fall_pen"])
-            signals.append(f"⚠️ Preço {pct*100:.1f}% ({w['price_fall_pen']:.0f}pts)"); active.append("price_fall_pen")
+        # Tendência recente (últimas 4 observações)
+        trend_recent = (prices[-1] - prices[-4]) / prices[-4]
+    else:
+        trend_recent = 0
+
+    # BLOQUEIO DURO — moeda em queda clara não passa
+    if trend_recent <= -0.10 and trend_overall <= -0.05:
+        # Caindo -10% recentemente E tendência geral negativa = bloqueia
+        return {
+            "score": 0,
+            "signals": [f"🚫 Bloqueado — preço em queda ({trend_recent*100:.1f}% recente, {trend_overall*100:.1f}% geral)"],
+            "verdict": "🚫 BLOQUEADO",
+            "category": "FRACO",
+            "active_signals": [],
+            "blocked": True
+        }
+    elif trend_recent >= 0.05:
+        # Subida recente — bom sinal
+        pts = min(int(w["price_rise"]), int(trend_recent*150)); score += pts
+        signals.append(f"🚀 Preço +{trend_recent*100:.1f}% (+{pts}pts)"); active.append("price_rise")
+    elif trend_recent <= -0.05:
+        # Queda leve — penaliza mas não bloqueia
+        score += int(w["price_fall_pen"])
+        signals.append(f"⚠️ Preço {trend_recent*100:.1f}% ({w['price_fall_pen']:.0f}pts)"); active.append("price_fall_pen")
 
     # 8. Frequência de trades
     rt = [t["time"] for t in trades[-10:]]
