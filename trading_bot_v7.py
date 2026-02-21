@@ -199,7 +199,12 @@ pending_checks = {}
 # Moedas que o bot viu mas ignorou (para aprender com oportunidades perdidas)
 skipped_coins  = {}   # mint → {price, time, signals_at_skip, score}
 SKIPPED_MAX    = 200  # máximo de moedas ignoradas em memória
-SKIP_CHECK_AFTER = 7200  # verifica 2h depois se subiu
+SKIP_CHECK_AFTER  = 7200  # verifica 2h depois se subiu
+
+# ── SILENT TRACKS — aprende fora da janela sem alertar ────────
+# Moedas que passaram os filtros fora da janela 23h-03h
+# O bot nao alerta mas aprende com o resultado
+silent_tracks    = {}   # mint → {price, time, active, check_at, ...}
 
 # ── BACKTESTING + PATTERN HISTORY ────────────────────
 BACKTEST_FILE   = f"{DATA_DIR}/backtest_history.json"
@@ -1277,8 +1282,10 @@ async def process_trade(msg, source="pump.fun"):
     price    = prices[-1] if prices else 0
 
     # ── GUARDA MOEDAS IGNORADAS para aprender com oportunidades perdidas ──
+    hot_now_skip = is_hot_window()
+    min_score_skip = CONFIG["min_confidence"] if hot_now_skip else CONFIG["min_confidence"] + 10
     if (cat not in CONFIG["min_category"] or
-            analysis["score"] < CONFIG["min_confidence"] or
+            analysis["score"] < min_score_skip or
             analysis.get("blocked", False)):
         # Moeda não passou o filtro — guarda para verificar depois
         if mint not in skipped_coins and mint not in alerted_tokens and len(skipped_coins) < SKIPPED_MAX:
@@ -1295,14 +1302,18 @@ async def process_trade(msg, source="pump.fun"):
                 "vol_ratio":  (d.get("vol_1h",0)/d.get("vol_24h",1)) if d.get("vol_24h",0)>0 else 0,
             }
 
-    if (cat in CONFIG["min_category"] and
-            analysis["score"] >= CONFIG["min_confidence"] and
-            not analysis.get("blocked", False)):
+    hot_now    = is_hot_window()
+    # Fora da janela exige score mais alto (mercado mais fraco de dia)
+    min_score  = CONFIG["min_confidence"] if hot_now else CONFIG["min_confidence"] + 10
 
-        # ── MARCA COMO ALERTADO — nunca mais repete ──
+    qualifies = (cat in CONFIG["min_category"] and
+                 analysis["score"] >= min_score and
+                 not analysis.get("blocked", False))
+
+    if qualifies:
+        # ── ALERTA 24/7 — janela ativa ou não ──
         alerted_tokens.add(mint)
         save_alerted()
-
         print_alert(mint, analysis, price, source)
         log_alert(mint, analysis, price, source)
         await send_discord_alert(mint, analysis, price, source)
@@ -1313,18 +1324,15 @@ async def process_trade(msg, source="pump.fun"):
             "active_signals":  analysis["active_signals"],
             "name":            d.get("name","?"),
             "check_at":        now + CONFIG["check_after"],
-            # Guarda contexto para diagnóstico
             "alert_mcap":      d.get("market_cap", 0),
             "alert_liq":       d.get("liquidity", 0),
             "alert_vol_ratio": (d.get("vol_1h",0) / d.get("vol_24h",1)) if d.get("vol_24h",0) > 0 else 0,
-            "alert_in_hot":    is_hot_window(),
+            "alert_in_hot":    hot_now,
             "alert_score":     analysis["score"],
             "alert_category":  analysis.get("category","?"),
-            # Dados Helius para diagnóstico
             "alert_holders":   d.get("holders", 0),
             "alert_top10_pct": d.get("top10_pct", 0),
             "alert_dev_holds": d.get("dev_still_holds", None),
-            # Tracking de milestones
             "milestones_hit":  set(),
             "peak_change":     0,
             "drop_alerted_at": None,
@@ -1457,6 +1465,62 @@ async def update_loop():
 
             await asyncio.sleep(1)  # pequena pausa entre moedas
 
+async def learn_from_silent():
+    """
+    Verifica 2h depois moedas que passaram os filtros fora da janela.
+    Aprende com elas sem ter alertado — aprendizagem 24/7.
+    """
+    global WEIGHTS, learns_done
+    now      = time.time()
+    to_check = [m for m,d in list(silent_tracks.items()) if now >= d["check_at"]]
+
+    for mint in to_check:
+        data       = silent_tracks.pop(mint)
+        skip_price = data["price"]
+        if skip_price <= 0: continue
+
+        dex = await fetch_dexscreener(mint)
+        if not dex or dex.get("price", 0) <= 0: continue
+
+        current_price = dex["price"]
+        change        = (current_price - skip_price) / skip_price
+        success       = change >= CONFIG["success_threshold"]
+        result_str    = f"+{change*100:.1f}%" if change >= 0 else f"{change*100:.1f}%"
+
+        # Aprende — mesmo mecanismo que alertas normais
+        old_w   = dict(WEIGHTS)
+        WEIGHTS = adjust_weights(WEIGHTS, data["active"], success, change)
+        learns_done += 1
+
+        # Guarda no historico de padroes
+        pattern_history.append({
+            "timestamp": time.time(), "name": data["name"],
+            "signals":   data["active"], "result": round(change, 3),
+            "success":   success, "mcap": data["mcap"],
+            "liq":       data["liq"], "vol_ratio": data.get("vol_ratio",0),
+            "hot":       False, "score": data["score"],
+            "source":    "silent_track",
+        })
+
+        # Stats por hora
+        alert_hour = datetime.fromtimestamp(data["time"]).hour
+        if alert_hour not in hour_stats:
+            hour_stats[alert_hour] = {"wins": 0, "total": 0, "avg_gain": 0.0}
+        hs = hour_stats[alert_hour]
+        hs["total"] += 1
+        if success: hs["wins"] += 1
+        hs["avg_gain"] = (hs["avg_gain"] * (hs["total"]-1) + change*100) / hs["total"]
+
+        changed = {k: f"{old_w[k]:.1f}->{WEIGHTS[k]:.1f}" for k in WEIGHTS if abs(WEIGHTS[k]-old_w[k]) > 0.1}
+        icon = "✅" if success else "❌"
+        print(f"[Silent] {icon} {data['name']} — {result_str} (fora janela, hora {alert_hour}h)")
+        if changed: print(f"[Silent]    Pesos: {changed}")
+
+    if to_check:
+        save_weights(WEIGHTS)
+        save_pattern_history()
+        save_hour_stats()
+
 async def learn_from_skipped():
     """
     Verifica 2h depois moedas que o bot IGNOROU.
@@ -1517,7 +1581,7 @@ async def learn_from_skipped():
         now = time.time()
 
         # Verifica alertas 2h depois → aprende
-        for mint in [m for m,c in list(pending_checks.items()) if now >= c["check_at"]]:
+        for mint in [m for m,chk in list(pending_checks.items()) if now >= chk["check_at"]]:
             await check_and_learn(mint, pending_checks.pop(mint))
 
         # Aprende com moedas ignoradas que subiram (a cada 5 min)
@@ -1824,26 +1888,47 @@ async def run_backtesting():
 # 🔧  MAINTENANCE
 # ─────────────────────────────────────────────
 
+LAST_BACKTEST = 0  # timestamp do ultimo backtesting periodico
+
 async def maintenance_loop():
+    global LAST_BACKTEST
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)
         now = time.time()
 
         # Verifica alertas 2h depois -> aprende
-        for mint in [m for m,c in list(pending_checks.items()) if now >= c["check_at"]]:
+        for mint in [m for m,chk in list(pending_checks.items()) if now >= chk["check_at"]]:
             await check_and_learn(mint, pending_checks.pop(mint))
 
-        # Aprende com moedas ignoradas que subiram (a cada 5 min)
-        if int(now) % 300 < 61:
+        # Aprende com silent tracks (fora da janela) a cada 5 min
+        if int(now) % 300 < 31:
+            await learn_from_silent()
+
+        # Aprende com moedas ignoradas que subiram a cada 5 min
+        if int(now) % 300 < 31:
             await learn_from_skipped()
 
+        # Backtesting periodico a cada 6 horas — dados sempre frescos
+        if now - LAST_BACKTEST >= 21600:
+            LAST_BACKTEST = now
+            print("[Backtest] 6h passadas — a correr backtesting com dados frescos...")
+            await run_backtesting()
+
+        # Limpa holder_timeline e rockets antigos a cada 10 min
+        if int(now) % 600 < 31:
+            for mint in list(holder_timeline.keys()):
+                if mint not in pending_checks and mint not in token_data:
+                    holder_timeline.pop(mint, None)
+            recent_rockets[:] = [r for r in recent_rockets if now - r["time"] < 14400]
+
         # Status a cada 5 min
-        if int(now) % 300 < 61:
+        if int(now) % 300 < 31:
             cleanup_old_tokens()
             hot = "ATIVA" if is_hot_window() else "inativa"
             print(f"[Status] {datetime.now().strftime('%H:%M:%S')} | Janela: {hot} | "
                   f"Vistas: {tokens_seen} | Alertadas: {len(alerted_tokens)} | "
-                  f"Alertas: {alerts_sent} | Aprendizagens: {learns_done}")
+                  f"Alertas: {alerts_sent} | Aprendizagens: {learns_done} | "
+                  f"Padroes: {len(pattern_history)} | Silent: {len(silent_tracks)}")
 
 # ─────────────────────────────────────────────
 # 🚀  MAIN
