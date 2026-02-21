@@ -124,6 +124,10 @@ DEFAULT_WEIGHTS = {
     "signal_consensus": 20.0,   # bonus quando 8+ sinais positivos concordam
     "anti_fomo":       -30.0,   # moeda ja subiu muito antes do bot a ver
     "stop_loss_risk":  -20.0,   # proximo do pior resultado historico deste padrao
+    # Rugpull intelligence
+    "bad_dev":         -60.0,   # dev ja fez rugpull antes — bloqueia quase sempre
+    "bundle_buy":      -40.0,   # primeiras compras identicas = bot a simular procura
+    "liq_price_diverge":-30.0, # preco sobe mas liquidez nao acompanha = red flag
 }
 
 def load_weights():
@@ -294,6 +298,28 @@ pending_checks = {}
 skipped_coins  = {}   # mint → {price, time, signals_at_skip, score}
 SKIPPED_MAX    = 200  # máximo de moedas ignoradas em memória
 SKIP_CHECK_AFTER  = 7200  # verifica 2h depois se subiu
+
+# ── RUGPULL INTELLIGENCE ─────────────────────────────────────
+# Carteiras de devs conhecidos por fazer rugpull
+# O bot vai expandindo esta lista automaticamente
+BAD_DEV_WALLETS  = set()   # carteiras de devs que fizeram rugpull
+bad_dev_file     = f"{DATA_DIR}/bad_devs.json"
+
+def load_bad_devs():
+    if os.path.exists(bad_dev_file):
+        try: return set(json.load(open(bad_dev_file)))
+        except: pass
+    return set()
+
+def save_bad_devs():
+    json.dump(list(BAD_DEV_WALLETS), open(bad_dev_file, "w"))
+
+BAD_DEV_WALLETS = load_bad_devs()
+
+# Regista o dev de cada token alertado
+token_dev_wallet = {}   # mint → dev_wallet
+# Regista primeiras compras de cada token (para bundle detection)
+token_early_buys = {}   # mint → [sol_amounts das primeiras 10 compras]
 
 # ── SILENT TRACKS — aprende fora da janela sem alertar ────────
 # Moedas que passaram os filtros fora da janela 23h-03h
@@ -738,6 +764,48 @@ def calculate_confidence(mint):
         signals.append(f"✅ Consenso: {len(positive_signals)} sinais positivos (+{pts}pts)")
         active.append("signal_consensus")
 
+    # F. BAD DEV — carteira do dev já fez rugpull antes
+    dev_wallet = token_dev_wallet.get(mint, "")
+    if dev_wallet and dev_wallet in BAD_DEV_WALLETS:
+        score += int(w.get("bad_dev", -60))
+        signals.append(f"🚨 Dev já fez rugpull antes! ({w.get('bad_dev',-60):.0f}pts)")
+        active.append("bad_dev")
+        # Se dev é conhecido por rugpull, bloqueia diretamente
+        return {
+            "score": 0,
+            "signals": [f"🚫 BLOQUEADO — dev desta carteira já fez rugpull ({dev_wallet[:16]}...)"],
+            "verdict": "🚫 BLOQUEADO",
+            "category": "FRACO",
+            "active_signals": [],
+            "blocked": True
+        }
+
+    # G. BUNDLE BUY DETECTION — primeiras compras muito parecidas = bot
+    early = token_early_buys.get(mint, [])
+    if len(early) >= 6:
+        avg_buy = sum(early) / len(early)
+        if avg_buy > 0:
+            # Coeficiente de variação — quanto mais baixo mais uniformes são as compras
+            variance  = sum((x - avg_buy)**2 for x in early) / len(early)
+            std_dev   = variance ** 0.5
+            cv        = std_dev / avg_buy  # 0 = todas iguais, 1+ = muito variadas
+            if cv < 0.15:  # compras quase todas iguais = bot
+                score += int(w.get("bundle_buy", -40))
+                signals.append(f"🤖 Bundle buy detetado — {len(early)} compras idênticas (cv={cv:.2f}) ({w.get('bundle_buy',-40):.0f}pts)")
+                active.append("bundle_buy")
+
+    # H. LIQUIDEZ vs PREÇO DIVERGÊNCIA — preço sobe mas liquidez não acompanha
+    if len(prices) >= 3:
+        price_change = (prices[-1] - prices[0]) / prices[0] if prices[0] > 0 else 0
+        liq_now      = d.get("liquidity", 0)
+        liq_start    = d.get("liq_at_start", liq_now)
+        liq_change   = (liq_now - liq_start) / liq_start if liq_start > 0 else 0
+        # Preço subiu muito mas liquidez ficou igual ou caiu = red flag
+        if price_change >= 0.30 and liq_change < 0.05:
+            score += int(w.get("liq_price_diverge", -30))
+            signals.append(f"⚠️ Preço +{price_change*100:.0f}% mas liquidez não acompanha ({w.get('liq_price_diverge',-30):.0f}pts)")
+            active.append("liq_price_diverge")
+
     # E. STOP-LOSS RISK — proximo do pior resultado historico deste padrao
     if len(active) >= 2:
         pat_key_now = "|".join(sorted(active[:5]))
@@ -757,6 +825,11 @@ def calculate_confidence(mint):
     holders   = d.get("holders", 0)
     top10_pct = d.get("top10_pct", 0)
     dev_holds = d.get("dev_still_holds", None)
+
+    # Dev suspeito (muitas transações = serial creator)
+    if d.get("dev_suspicious"):
+        score -= 25
+        signals.append("⚠️ Dev suspeito — histórico de muitas transações (-25pts)")
 
     if holders > 0:
         if holders >= 100:
@@ -888,6 +961,28 @@ async def fetch_helius_data(mint):
         print(f"[Helius] ⚠️ {e}")
         return None
 
+async def fetch_dev_token_count(dev_wallet):
+    """
+    Verifica quantos tokens este dev já criou via Helius.
+    Dev que cria muitos tokens rapidamente = red flag.
+    """
+    if "COLA" in HELIUS_API_KEY or not dev_wallet: return 0
+    try:
+        url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+        payload = {
+            "jsonrpc": "2.0", "id": 1,
+            "method": "getSignaturesForAddress",
+            "params": [dev_wallet, {"limit": 50}]
+        }
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status != 200: return 0
+                data = await r.json()
+                sigs = data.get("result", [])
+                # Estimativa: muitas transações recentes = dev ativo a criar tokens
+                return len(sigs)
+    except: return 0
+
 async def enrich_token_helius(mint):
     """Enriquece token com dados Helius para afinação automática."""
     data = await fetch_helius_data(mint)
@@ -898,6 +993,16 @@ async def enrich_token_helius(mint):
     d["top10_pct"]       = data["top10_pct"]
     d["dev_still_holds"] = data["dev_still_holds"]
     d["dev_pct"]         = data["dev_pct"]
+
+    # Verifica histórico do dev
+    dev_wallet = token_dev_wallet.get(mint, "")
+    if dev_wallet:
+        dev_tx_count = await fetch_dev_token_count(dev_wallet)
+        d["dev_tx_count"] = dev_tx_count
+        if dev_tx_count >= 40:
+            d["dev_suspicious"] = True  # dev muito ativo = suspeito
+            print(f"[Helius] ⚠️ Dev suspeito — {dev_tx_count} transações recentes")
+
     print(f"[Helius] {d.get('name','?')} — {data['holders']} holders | top10: {data['top10_pct']:.0f}% | dev: {'✅' if data['dev_still_holds'] else '❌ vendeu'}")
 
 # ─────────────────────────────────────────────
@@ -1025,6 +1130,16 @@ async def check_and_learn(mint, check_data):
             successful_themes[theme]["total_gain"]    += change
 
     # ── 5. LOG ──────────────────────────────────────────────
+    # ── Aprende carteiras de devs que fizeram rugpull ──────────
+    if not success and change <= -0.40:
+        # Queda de -40%+ = provável rugpull — guarda o dev
+        dev_wallet = token_dev_wallet.get(mint, "")
+        if dev_wallet and len(dev_wallet) > 30:
+            if dev_wallet not in BAD_DEV_WALLETS:
+                BAD_DEV_WALLETS.add(dev_wallet)
+                save_bad_devs()
+                print(f"[Rugpull] ⚠️ Dev adicionado à blacklist: {dev_wallet[:16]}... ({name} caiu {change*100:.0f}%)")
+
     # ── Guarda rockets para detetar copy-cats ──────────────────
     if success and change >= 0.80:
         theme = detect_theme(name)
@@ -1383,6 +1498,18 @@ async def process_trade(msg, source="pump.fun"):
         if mint not in wallet_volumes: wallet_volumes[mint] = {}
         wallet_volumes[mint][wallet] = wallet_volumes[mint].get(wallet, 0) + sol_amount/1e9
 
+    # Regista primeiras compras para detetar bundle buys
+    if "buy" in trade_type and sol_amount > 0:
+        if mint not in token_early_buys:
+            token_early_buys[mint] = []
+        if len(token_early_buys[mint]) < 15:
+            token_early_buys[mint].append(sol_amount / 1e9 if sol_amount > 1000 else sol_amount)
+
+    # Regista dev wallet (primeiro criador da moeda)
+    creator = msg.get("mint") and msg.get("traderPublicKey")
+    if creator and mint not in token_dev_wallet:
+        token_dev_wallet[mint] = creator
+
     if d["first_trade_time"] is None: d["first_trade_time"] = time.time()
     d["trades"].append({"time": time.time(), "type": trade_type, "sol": sol_amount})
     if "buy"  in trade_type: d["buy_count"]  += 1
@@ -1397,6 +1524,11 @@ async def process_trade(msg, source="pump.fun"):
     if sol_amount > 0 and token_amt > 0:
         est = sol_amount / token_amt; d["prices"].append(est)
         if est > d["peak_price"]: d["peak_price"] = est
+
+    # Guarda liquidez inicial para detetar divergência
+    liq_current = d.get("liquidity", 0)
+    if liq_current > 0 and d.get("liq_at_start", 0) == 0:
+        d["liq_at_start"] = liq_current
 
     prices = list(d["prices"])
     if d["alert_price"] is None and prices: d["alert_price"] = prices[0]
@@ -2100,6 +2232,7 @@ if __name__ == "__main__":
         save_pattern_history()
         save_hour_stats()
         save_alerted()
+        save_bad_devs()
         print(f"[Railway] Dados guardados. Alertas: {alerts_sent} | Aprendizagens: {learns_done}")
         sys.exit(0)
 
