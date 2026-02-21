@@ -159,10 +159,9 @@ def adjust_weights(weights, active_signals, success, change_pct=0):
     return weights
 
 WEIGHTS        = load_weights()
-pattern_history = load_pattern_history()
 token_data     = {}
 # Carrega tokens já alertados de ficheiro para persistir entre reinicios
-ALERTED_FILE = "alertados.json"
+ALERTED_FILE = f"{DATA_DIR}/alertados.json"
 def load_alerted():
     if os.path.exists(ALERTED_FILE):
         try: return set(json.load(open(ALERTED_FILE)))
@@ -203,7 +202,7 @@ SKIPPED_MAX    = 200  # máximo de moedas ignoradas em memória
 SKIP_CHECK_AFTER = 7200  # verifica 2h depois se subiu
 
 # ── BACKTESTING + PATTERN HISTORY ────────────────────
-BACKTEST_FILE   = "backtest_history.json"
+BACKTEST_FILE   = f"{DATA_DIR}/backtest_history.json"
 pattern_history = []   # [{signals, result, mcap, liq, vol_ratio, hot, timestamp}]
 MAX_HISTORY     = 2000 # máximo de padrões guardados
 
@@ -218,6 +217,8 @@ def load_pattern_history():
 
 def save_pattern_history():
     json.dump(pattern_history[-MAX_HISTORY:], open(BACKTEST_FILE, "w"))
+
+pattern_history = load_pattern_history()  # carrega DEPOIS de definir a função
 
 # ── CORRELAÇÃO DE TEMAS ───────────────────────────────
 successful_themes = {}  # tema → {count_success, count_total, avg_gain}
@@ -258,7 +259,7 @@ MAX_ROCKETS      = 30
 # ── HORA EXATA DO PICO ────────────────────────────────
 # Aprende em que hora do dia as moedas tendem a picar mais
 # hour_stats[hora] = {wins, total, avg_gain}
-HOUR_STATS_FILE = "hour_stats.json"
+HOUR_STATS_FILE = f"{DATA_DIR}/hour_stats.json"
 hour_stats = {}
 
 def load_hour_stats():
@@ -273,7 +274,7 @@ def load_hour_stats():
 def save_hour_stats():
     json.dump(hour_stats, open(HOUR_STATS_FILE, "w"), indent=2)
 
-hour_stats = load_hour_stats()
+hour_stats = load_hour_stats()  # carrega DEPOIS de definir a função
 
 # ─────────────────────────────────────────────
 # 📊  TOKEN DATA
