@@ -37,6 +37,14 @@ from collections import deque
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
 HELIUS_API_KEY      = os.environ.get("HELIUS_API_KEY", "COLA_AQUI_A_TUA_HELIUS_KEY")
 
+# ── RAILWAY API — para guardar aprendizagem como variável de ambiente ──
+# Adiciona no Railway: RAILWAY_API_TOKEN (Settings → Tokens → New Token)
+# e RAILWAY_SERVICE_ID (está no URL do teu serviço)
+RAILWAY_API_TOKEN   = os.environ.get("RAILWAY_API_TOKEN", "")
+RAILWAY_SERVICE_ID  = os.environ.get("RAILWAY_SERVICE_ID", "")
+RAILWAY_PROJECT_ID  = os.environ.get("RAILWAY_PROJECT_ID", "")
+RAILWAY_ENV_ID      = os.environ.get("RAILWAY_ENVIRONMENT_ID", "")  # Railway injeta isto automaticamente
+
 # ── RAILWAY: usa /tmp para ficheiros (sobrevive a reinicios) ──
 # Para persistência total entre deploys, configura um Volume no Railway
 # Settings → Volumes → Mount Path: /data
@@ -119,6 +127,24 @@ DEFAULT_WEIGHTS = {
 }
 
 def load_weights():
+    """
+    Carrega pesos por ordem de prioridade:
+    1. Variável de ambiente BOT_WEIGHTS (Railway — persiste entre deploys)
+    2. Ficheiro local pesos.json (persiste entre reinicios)
+    3. Pesos iniciais hardcoded
+    """
+    # Prioridade 1: variável de ambiente (persiste entre deploys no Railway)
+    env_weights = os.environ.get("BOT_WEIGHTS", "")
+    if env_weights:
+        try:
+            saved = json.loads(env_weights)
+            w = {**DEFAULT_WEIGHTS, **saved}
+            print(f"[Aprendizagem] ✅ Pesos carregados da variável BOT_WEIGHTS ({len(saved)} pesos)")
+            return w
+        except Exception as e:
+            print(f"[Aprendizagem] ⚠️ BOT_WEIGHTS inválido: {e}")
+
+    # Prioridade 2: ficheiro local
     if os.path.exists(CONFIG["weights_file"]):
         try:
             saved = json.load(open(CONFIG["weights_file"]))
@@ -126,11 +152,78 @@ def load_weights():
             print(f"[Aprendizagem] ✅ Pesos carregados de {CONFIG['weights_file']}")
             return w
         except Exception: pass
+
     print("[Aprendizagem] Usando pesos iniciais (baseados em 11+ moedas reais)")
     return dict(DEFAULT_WEIGHTS)
 
+# Controlo para não spammar a Railway API — só guarda se mudou significativamente
+_last_railway_save = 0
+_last_saved_weights = {}
+
+async def save_weights_to_railway(w):
+    """Guarda pesos como variável de ambiente no Railway via GraphQL API."""
+    global _last_railway_save, _last_saved_weights
+
+    if not RAILWAY_API_TOKEN or not RAILWAY_SERVICE_ID or not RAILWAY_ENV_ID:
+        return  # Railway API não configurada — falha silenciosa
+
+    # Só guarda se passaram 10 minutos desde o último save
+    now = time.time()
+    if now - _last_railway_save < 600:
+        return
+
+    # Só guarda se os pesos mudaram significativamente
+    if _last_saved_weights:
+        max_change = max(abs(w.get(k,0) - _last_saved_weights.get(k,0)) for k in w)
+        if max_change < 0.5:
+            return
+
+    try:
+        weights_json = json.dumps(w, separators=(',', ':'))
+        # GraphQL mutation para upsert de variável
+        query = """
+        mutation upsertVariables($input: VariableCollectionUpsertInput!) {
+            variableCollectionUpsert(input: $input)
+        }
+        """
+        variables = {
+            "input": {
+                "projectId":     RAILWAY_PROJECT_ID,
+                "environmentId": RAILWAY_ENV_ID,
+                "serviceId":     RAILWAY_SERVICE_ID,
+                "variables":     {"BOT_WEIGHTS": weights_json}
+            }
+        }
+        headers = {
+            "Authorization": f"Bearer {RAILWAY_API_TOKEN}",
+            "Content-Type":  "application/json",
+        }
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                "https://backboard.railway.com/graphql/v2",
+                json={"query": query, "variables": variables},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as r:
+                if r.status == 200:
+                    _last_railway_save   = now
+                    _last_saved_weights  = dict(w)
+                    print(f"[Railway] ✅ Pesos guardados na variável BOT_WEIGHTS")
+                else:
+                    print(f"[Railway] ⚠️ Erro ao guardar pesos: {r.status}")
+    except Exception as e:
+        print(f"[Railway] ⚠️ Erro API: {e}")
+
 def save_weights(w):
+    """Guarda pesos no ficheiro local (sempre) e agenda save no Railway."""
     json.dump(w, open(CONFIG["weights_file"], "w"), indent=2)
+    # Agenda save no Railway de forma assíncrona sem bloquear
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(save_weights_to_railway(w))
+    except Exception:
+        pass  # fora de contexto async — só guarda no ficheiro
 
 def adjust_weights(weights, active_signals, success, change_pct=0):
     """
@@ -1939,6 +2032,10 @@ async def maintenance_loop():
                   f"Vistas: {tokens_seen} | Alertadas: {len(alerted_tokens)} | "
                   f"Alertas: {alerts_sent} | Aprendizagens: {learns_done} | "
                   f"Padroes: {len(pattern_history)} | Silent: {len(silent_tracks)}")
+
+        # Guarda pesos no Railway a cada 10 min
+        if int(now) % 600 < 31:
+            await save_weights_to_railway(WEIGHTS)
 
 # ─────────────────────────────────────────────
 # 🚀  MAIN
