@@ -34,7 +34,7 @@ from collections import deque
 # ⚙️  CONFIGURAÇÃO
 # ─────────────────────────────────────────────
 
-BOT_VERSION  = "v11.2 — 22/02/2026"
+BOT_VERSION  = "v11.3 — 22/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -1739,61 +1739,108 @@ async def process_trade(msg, source="pump.fun"):
 # 🌐  WEBSOCKET — pump.fun
 # ─────────────────────────────────────────────
 
+# Variaveis globais de saude do WebSocket
+ws_last_message   = 0
+ws_connected      = False
+ws_fail_streak    = 0
+ws_total_restarts = 0
+
 async def pumpfun_scanner():
-    url              = "wss://pumpportal.fun/api/data"
-    reconnect_delay  = 1    # começa em 1s — aumenta com falhas consecutivas
-    max_delay        = 15   # máximo 15s entre tentativas
-    fail_streak      = 0    # falhas consecutivas
-    last_connect_ok  = None # timestamp da última conexão bem sucedida
+    global ws_last_message, ws_connected, ws_fail_streak, ws_total_restarts
+
+    url                = "wss://pumpportal.fun/api/data"
+    reconnect_delay    = 1
+    max_delay          = 10
+    last_connect_ok    = None
+    last_discord_alert = 0
 
     print("[pump.fun] Conectando...")
     while True:
         try:
             async with websockets.connect(
                 url,
-                ping_interval=10,    # ping mais frequente para detetar drops mais rápido
-                ping_timeout=5,      # timeout mais curto — falha rápido em vez de ficar pendurado
-                close_timeout=2,
+                ping_interval=10,
+                ping_timeout=8,
+                close_timeout=3,
+                open_timeout=15,
+                max_size=2**23,
             ) as ws:
-                print(f"[pump.fun] ✅ Conectado! (delay era {reconnect_delay}s | falhas: {fail_streak})")
+                ws_connected       = True
+                ws_fail_streak     = 0
+                reconnect_delay    = 1
+                last_connect_ok    = time.time()
+                ws_last_message    = time.time()
+                ws_total_restarts += 1
+
+                print(f"[pump.fun] Conectado! reinicio #{ws_total_restarts}")
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
                 await ws.send(json.dumps({"method": "subscribeTokenTrade"}))
 
-                # Reset após conexão bem sucedida
-                reconnect_delay = 1
-                fail_streak     = 0
-                last_connect_ok = time.time()
-
                 async for raw in ws:
+                    ws_last_message = time.time()
                     try: await process_trade(json.loads(raw), source="pump.fun")
                     except Exception: pass
 
         except Exception as e:
-            fail_streak += 1
-            # Aumenta delay progressivamente mas nunca mais de 15s
+            ws_connected    = False
+            ws_fail_streak += 1
+            downtime        = time.time() - last_connect_ok if last_connect_ok else 0
             reconnect_delay = min(reconnect_delay * 1.5, max_delay)
-            downtime = time.time() - last_connect_ok if last_connect_ok else 0
 
-            print(f"[pump.fun] ❌ Falha #{fail_streak} — {type(e).__name__} — reconectando em {reconnect_delay:.0f}s...")
+            print(f"[pump.fun] Falha #{ws_fail_streak} — {type(e).__name__} — reconectando em {reconnect_delay:.0f}s...")
 
-            # Se está em baixo há mais de 2 minutos avisa no Discord
-            if downtime > 120 and "COLA" not in DISCORD_WEBHOOK_URL:
+            now = time.time()
+            if downtime > 120 and "COLA" not in DISCORD_WEBHOOK_URL and now - last_discord_alert > 600:
+                last_discord_alert = now
                 try:
                     async with aiohttp.ClientSession() as s:
                         await s.post(DISCORD_WEBHOOK_URL,
-                            json={"embeds": [{
-                                "title":       "⚠️ WebSocket pump.fun em baixo",
-                                "description": f"Sem ligacao ao pump.fun ha **{int(downtime/60)} minutos**.\nFalhas consecutivas: {fail_streak}\nA reconectar...",
-                                "color":       0xff4444,
-                                "footer":      {"text": "Trading Bot v11.0"},
-                                "timestamp":   datetime.now(timezone.utc).isoformat()
+                            json={"embeds": [{"title": "WebSocket pump.fun em baixo",
+                                "description": (
+                                    "Sem ligacao ha **" + str(int(downtime/60)) + " min**. "
+                                    "Falhas: " + str(ws_fail_streak) + " | "
+                                    "Reinicio #" + str(ws_total_restarts)
+                                ),
+                                "color": 0xff4444,
+                                "footer": {"text": f"Trading Bot {BOT_VERSION}"},
+                                "timestamp": datetime.now(timezone.utc).isoformat()
                             }]},
                             timeout=aiohttp.ClientTimeout(total=5))
                 except Exception: pass
 
             await asyncio.sleep(reconnect_delay)
 
-# ─────────────────────────────────────────────
+async def pumpfun_watchdog():
+    """Vigia WebSocket — se ficar 3 min sem mensagens avisa e aguarda reconexao."""
+    global ws_last_message, ws_connected
+    await asyncio.sleep(60)
+    last_alert = 0
+    while True:
+        await asyncio.sleep(30)
+        now     = time.time()
+        silence = now - ws_last_message if ws_last_message > 0 else 0
+
+        if ws_connected and silence > 180:
+            print(f"[Watchdog] Silencio de {int(silence/60)}m — ligacao fantasma!")
+            ws_connected = False
+
+            if "COLA" not in DISCORD_WEBHOOK_URL and now - last_alert > 600:
+                last_alert = now
+                try:
+                    async with aiohttp.ClientSession() as s:
+                        await s.post(DISCORD_WEBHOOK_URL,
+                            json={"embeds": [{"title": "Watchdog — ligacao fantasma",
+                                "description": (
+                                    "WebSocket aparecia ligado mas sem mensagens ha **"
+                                    + str(int(silence/60)) + " min**. A forcar reconexao..."
+                                ),
+                                "color": 0xff8800,
+                                "footer": {"text": f"Trading Bot {BOT_VERSION}"},
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            }]},
+                            timeout=aiohttp.ClientTimeout(total=5))
+                except Exception: pass
+
 # 🌐  POLLING — DexScreener (moedas trending)
 # ─────────────────────────────────────────────
 
@@ -2589,6 +2636,7 @@ async def main():
 
     await asyncio.gather(
         pumpfun_scanner(),
+        pumpfun_watchdog(),
         dexscreener_scanner(),
         update_loop(),
         maintenance_loop(),
