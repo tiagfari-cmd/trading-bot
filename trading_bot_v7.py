@@ -34,7 +34,7 @@ from collections import deque
 # ⚙️  CONFIGURAÇÃO
 # ─────────────────────────────────────────────
 
-BOT_VERSION  = "v11.4 — 22/02/2026"
+BOT_VERSION  = "v11.5 — 22/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -1776,6 +1776,21 @@ async def pumpfun_scanner():
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
                 await ws.send(json.dumps({"method": "subscribeTokenTrade"}))
 
+                # Avisa Discord quando reconecta (só se houve downtime real)
+                if ws_total_restarts > 1 and "COLA" not in DISCORD_WEBHOOK_URL:
+                    downtime_s = int(time.time() - last_connect_ok) if last_connect_ok else 0
+                    try:
+                        async with aiohttp.ClientSession() as s:
+                            await s.post(DISCORD_WEBHOOK_URL,
+                                json={"embeds": [{"title": "pump.fun reconectado",
+                                    "description": "Ligacao ao pump.fun restaurada. Bot a 100%.",
+                                    "color": 0x00ff88,
+                                    "footer": {"text": f"Trading Bot {BOT_VERSION}"},
+                                    "timestamp": datetime.now(timezone.utc).isoformat()
+                                }]},
+                                timeout=aiohttp.ClientTimeout(total=5))
+                    except Exception: pass
+
                 async for raw in ws:
                     ws_last_message = time.time()
                     try: await process_trade(json.loads(raw), source="pump.fun")
@@ -1840,6 +1855,50 @@ async def pumpfun_watchdog():
                             }]},
                             timeout=aiohttp.ClientTimeout(total=5))
                 except Exception: pass
+
+
+async def helius_scanner():
+    """Helius WebSocket — alternativa mais estavel ao pump.fun."""
+    if "COLA" in HELIUS_API_KEY:
+        print("[Helius WS] Sem API key — scanner desativado")
+        return
+
+    url             = f"wss://atlas-mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+    reconnect_delay = 1
+
+    print("[Helius WS] Conectando como backup ao pump.fun...")
+    while True:
+        try:
+            async with websockets.connect(url, ping_interval=15, ping_timeout=10, open_timeout=20) as ws:
+                # Subscreve logs do programa pump.fun para apanhar novos tokens
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0", "id": 1,
+                    "method":  "logsSubscribe",
+                    "params":  [
+                        {"mentions": ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"]},
+                        {"commitment": "confirmed"}
+                    ]
+                }))
+                reconnect_delay = 1
+                print("[Helius WS] Conectado! Backup ao pump.fun ativo.")
+
+                async for raw in ws:
+                    try:
+                        data  = json.loads(raw)
+                        logs  = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
+                        for log in logs:
+                            if "initialize" in log.lower():
+                                parts = log.split()
+                                for part in parts:
+                                    if len(part) >= 43 and part.endswith("pump"):
+                                        await process_trade({"mint": part, "name": "?", "symbol": "?"}, source="Helius")
+                                        break
+                    except Exception: pass
+
+        except Exception as e:
+            reconnect_delay = min(reconnect_delay * 1.5, 15)
+            print(f"[Helius WS] Falha — {type(e).__name__} — retentando em {reconnect_delay:.0f}s...")
+            await asyncio.sleep(reconnect_delay)
 
 # 🌐  POLLING — DexScreener (moedas trending)
 # ─────────────────────────────────────────────
@@ -2676,6 +2735,7 @@ async def main():
     await asyncio.gather(
         pumpfun_scanner(),
         pumpfun_watchdog(),
+        helius_scanner(),
         dexscreener_scanner(),
         update_loop(),
         maintenance_loop(),
