@@ -4,14 +4,14 @@
 AUTO-SCANNER + AUTO-APRENDE + HELIUS + BACKTESTING + ANTI-FOMO
 
 NOVIDADES v7 (baseadas em análise de 11+ moedas reais):
-✅ Cada moeda alertada UMA SÓ VEZ
-✅ CA em bloco de código — copy-paste direto no Discord
-✅ Monitoriza pump.fun E DexScreener em simultâneo
-✅ Filtro de Market Cap ($100K–$500K = sweet spot)
-✅ Filtro de Liquidity ($25K–$65K = ideal)
-✅ Ratio Vol1H/Vol24H > 5% = momentum (ou volume absoluto alto)
-✅ Atualização a cada 20 minutos após alerta
-✅ Aprende sozinho 2h após cada alerta
+[OK] Cada moeda alertada UMA SÓ VEZ
+[OK] CA em bloco de código — copy-paste direto no Discord
+[OK] Monitoriza pump.fun E DexScreener em simultâneo
+[OK] Filtro de Market Cap ($100K–$500K = sweet spot)
+[OK] Filtro de Liquidity ($25K–$65K = ideal)
+[OK] Ratio Vol1H/Vol24H > 5% = momentum (ou volume absoluto alto)
+[OK] Atualização a cada 20 minutos após alerta
+[OK] Aprende sozinho 2h após cada alerta
 
 FILTROS COMBINADOS (dados reais):
 Market Cap:  $100K–$500K
@@ -21,7 +21,7 @@ Categoria:   só ROCKET e BOM (+50% potencial)
 
 # INSTALACAO:  pip install websockets aiohttp
 COMO USAR:   python trading_bot_v7.py
-⚠️  Não garante lucro. Investe só o que podes perder.
+[AVISO]  Não garante lucro. Investe só o que podes perder.
 
 “””
 
