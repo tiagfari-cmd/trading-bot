@@ -626,6 +626,37 @@ def calculate_confidence(mint):
             signals.append(f"🟠 Preço alto ${ap:.7f} na janela (neutro)")
 
     # 3. Market Cap + Liquidity + Vol ratio (NOVOS FILTROS v7)
+    # ── FILTRO DE MOMENTUM — bloqueia moedas estagnadas ──────
+    # Exige variacao positiva recente — nao queremos moedas paradas
+    p5m  = d.get("p5m",  0)
+    p1h  = d.get("p1h",  0)
+    p24h = d.get("p24h", 0)
+
+    # Bloqueia se: caindo em 5min E caindo ou estagnada em 1h
+    if p5m < -5 and p1h < 2:
+        return {
+            "score": 0,
+            "signals": [f"Bloqueado — sem momentum (5m:{p5m:.1f}% 1h:{p1h:.1f}%)"],
+            "verdict": "BLOQUEADO",
+            "category": "FRACO",
+            "active_signals": [],
+            "blocked": True
+        }
+
+    # Bloqueia se estagnada: p1h quase plano E sem momentum a 5m
+    vol_1h  = d.get("vol_1h", 0)
+    vol_24h = d.get("vol_24h", 1)
+    vr      = vol_1h / vol_24h if vol_24h > 0 else 0
+    if -5 <= p1h <= 5 and p5m <= 0:
+        return {
+            "score": 0,
+            "signals": [f"Bloqueado — moeda estagnada (1h:{p1h:.1f}% vol:{vr*100:.1f}%)"],
+            "verdict": "BLOQUEADO",
+            "category": "FRACO",
+            "active_signals": [],
+            "blocked": True
+        }
+
     passed, mcap_score, mcap_signals, mcap_active = check_mcap_liq_vol(mint)
     if not passed:
         return {"score": 0, "signals": [f"🚫 Bloqueado — Market Cap demasiado alto"],
@@ -937,6 +968,7 @@ async def fetch_dexscreener(mint):
                 pairs = data.get("pairs") or []
                 if not pairs: return None
                 p = pairs[0]  # primeiro par (mais líquido)
+                chg = p.get("priceChange") or {}
                 return {
                     "price":      float(p.get("priceUsd") or 0),
                     "market_cap": float(p.get("fdv") or p.get("marketCap") or 0),
@@ -945,6 +977,10 @@ async def fetch_dexscreener(mint):
                     "vol_24h":    float((p.get("volume") or {}).get("h24") or 0),
                     "name":       p.get("baseToken", {}).get("name", ""),
                     "symbol":     p.get("baseToken", {}).get("symbol", ""),
+                    "p5m":        float(chg.get("m5") or 0),
+                    "p1h":        float(chg.get("h1") or 0),
+                    "p6h":        float(chg.get("h6") or 0),
+                    "p24h":       float(chg.get("h24") or 0),
                 }
     except Exception:
         return None
@@ -962,6 +998,11 @@ async def enrich_token_from_dex(mint):
     if data["vol_24h"] > 0:    d["vol_24h"]     = data["vol_24h"]
     if data["name"]:           d["name"]        = data["name"]
     if data["symbol"]:         d["symbol"]      = data["symbol"]
+    # Guarda variacao de preco para filtro de momentum
+    d["p5m"]  = data.get("p5m",  0)
+    d["p1h"]  = data.get("p1h",  0)
+    d["p6h"]  = data.get("p6h",  0)
+    d["p24h"] = data.get("p24h", 0)
 
 # ─────────────────────────────────────────────
 # 🔬  HELIUS — holders, dev wallet, concentração
