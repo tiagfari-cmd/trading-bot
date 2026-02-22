@@ -27,14 +27,14 @@ COMO USAR:   python trading_bot_v7.py
 """
 
 import asyncio, csv, json, os, time, aiohttp, websockets
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import deque
 
 # ─────────────────────────────────────────────
 # ⚙️  CONFIGURAÇÃO
 # ─────────────────────────────────────────────
 
-BOT_VERSION  = "v11.1 — 22/02/2026"
+BOT_VERSION  = "v11.2 — 22/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -626,35 +626,47 @@ def calculate_confidence(mint):
             signals.append(f"🟠 Preço alto ${ap:.7f} na janela (neutro)")
 
     # 3. Market Cap + Liquidity + Vol ratio (NOVOS FILTROS v7)
-    # ── FILTRO DE MOMENTUM — bloqueia moedas estagnadas ──────
-    # Exige variacao positiva recente — nao queremos moedas paradas
+    # ── FILTRO DE MOMENTUM — 3 janelas (5m + 1h + 6h) ────────
     p5m  = d.get("p5m",  0)
     p1h  = d.get("p1h",  0)
+    p6h  = d.get("p6h",  0)
     p24h = d.get("p24h", 0)
 
-    # Bloqueia se: caindo em 5min E caindo ou estagnada em 1h
+    # BLOQUEIO 1 — caindo em 5m E fraca em 1h = sem momentum
     if p5m < -5 and p1h < 2:
         return {
             "score": 0,
-            "signals": [f"Bloqueado — sem momentum (5m:{p5m:.1f}% 1h:{p1h:.1f}%)"],
-            "verdict": "BLOQUEADO",
-            "category": "FRACO",
-            "active_signals": [],
-            "blocked": True
+            "signals": [f"Bloqueado — caindo (5m:{p5m:.1f}% 1h:{p1h:.1f}%)"],
+            "verdict": "BLOQUEADO", "category": "FRACO",
+            "active_signals": [], "blocked": True
         }
 
-    # Bloqueia se estagnada: p1h quase plano E sem momentum a 5m
-    vol_1h  = d.get("vol_1h", 0)
-    vol_24h = d.get("vol_24h", 1)
-    vr      = vol_1h / vol_24h if vol_24h > 0 else 0
+    # BLOQUEIO 2 — estagnada: 1h quase plana E 5m negativo ou zero
     if -5 <= p1h <= 5 and p5m <= 0:
         return {
             "score": 0,
-            "signals": [f"Bloqueado — moeda estagnada (1h:{p1h:.1f}% vol:{vr*100:.1f}%)"],
-            "verdict": "BLOQUEADO",
-            "category": "FRACO",
-            "active_signals": [],
-            "blocked": True
+            "signals": [f"Bloqueado — estagnada (5m:{p5m:.1f}% 1h:{p1h:.1f}%)"],
+            "verdict": "BLOQUEADO", "category": "FRACO",
+            "active_signals": [], "blocked": True
+        }
+
+    # BLOQUEIO 3 — ja bateu o topo: subiu muito em 6h mas agora fraca em 1h
+    # Ex: +300% em 6h mas so +3% em 1h = pump ja aconteceu
+    if p6h >= 200 and p1h < 10:
+        return {
+            "score": 0,
+            "signals": [f"Bloqueado — topo atingido (6h:+{p6h:.0f}% mas 1h:{p1h:.1f}%)"],
+            "verdict": "BLOQUEADO", "category": "FRACO",
+            "active_signals": [], "blocked": True
+        }
+
+    # BLOQUEIO 4 — pump muito antigo: subiu muito em 24h mas 6h e 1h fracas
+    if p24h >= 300 and p6h < 20 and p1h < 5:
+        return {
+            "score": 0,
+            "signals": [f"Bloqueado — pump antigo (24h:+{p24h:.0f}% mas 6h:{p6h:.1f}% 1h:{p1h:.1f}%)"],
+            "verdict": "BLOQUEADO", "category": "FRACO",
+            "active_signals": [], "blocked": True
         }
 
     passed, mcap_score, mcap_signals, mcap_active = check_mcap_liq_vol(mint)
@@ -920,6 +932,16 @@ def calculate_confidence(mint):
         signals.append("⚠️ Dev suspeito — histórico de muitas transações (-25pts)")
 
     if holders > 0:
+        # Bloqueia moedas com pouquissimos holders — rugpull quase certo
+        if holders < 10:
+            return {
+                "score": 0,
+                "signals": [f"Bloqueado — apenas {holders} holders (concentracao extrema)"],
+                "verdict": "BLOQUEADO",
+                "category": "FRACO",
+                "active_signals": [],
+                "blocked": True
+            }
         if holders >= 100:
             pts = int(w["holders_good"]); score += pts
             signals.append(f"👥 Holders: {holders} — seguro (+{pts}pts)"); active.append("holders_good")
@@ -1331,7 +1353,7 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
         "color": color,
         "fields": [],
         "footer":    {"text": f"Trading Bot v11.0 • Alerta #{alerts_sent+1} • Fonte: {source}"},
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
     try:
@@ -1518,7 +1540,7 @@ async def send_discord_movement(mint, alert_data, current_price, pct, direction,
         "color":     color,
         "fields":    fields,
         "footer":    {"text": "Trading Bot v11.0 • probabilidades são orientação, não garantia"},
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
     try:
@@ -1764,7 +1786,7 @@ async def pumpfun_scanner():
                                 "description": f"Sem ligacao ao pump.fun ha **{int(downtime/60)} minutos**.\nFalhas consecutivas: {fail_streak}\nA reconectar...",
                                 "color":       0xff4444,
                                 "footer":      {"text": "Trading Bot v11.0"},
-                                "timestamp":   datetime.utcnow().isoformat()
+                                "timestamp":   datetime.now(timezone.utc).isoformat()
                             }]},
                             timeout=aiohttp.ClientTimeout(total=5))
                 except Exception: pass
@@ -1923,7 +1945,7 @@ async def update_loop():
                                         "description": reaccel_desc,
                                         "color": 0x00ccff,
                                         "footer": {"text": f"Trading Bot {BOT_VERSION} - Re-aceleracao detetada"},
-                                        "timestamp": datetime.utcnow().isoformat()
+                                        "timestamp": datetime.now(timezone.utc).isoformat()
                                     }
                                     try:
                                         async with aiohttp.ClientSession() as s:
@@ -2109,7 +2131,7 @@ async def send_rugpull_alert(mint, name, liq_before, liq_now, price_drop_pct):
         ),
         "color": 0xff0000,
         "footer": {"text": f"Trading Bot {BOT_VERSION} • ALERTA URGENTE — não é conselho financeiro"},
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
     try:
         async with aiohttp.ClientSession() as s:
@@ -2530,7 +2552,7 @@ async def main():
                     "description": crash_desc,
                     "color": 0xff9900,
                     "footer": {"text": f"Trading Bot {BOT_VERSION} - Auto-recuperacao"},
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 try:
                     async with aiohttp.ClientSession() as s:
@@ -2552,7 +2574,7 @@ async def main():
             "description": "Nova sessao iniciada! | MCap $100K-$500K | Liq $12K-$70K | Vol>5% | Janela: 23h-03h",
             "color": 0x00ff88,
             "footer": {"text": f"Trading Bot {BOT_VERSION}"},
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         try:
             async with aiohttp.ClientSession() as s:
