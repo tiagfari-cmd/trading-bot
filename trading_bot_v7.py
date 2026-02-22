@@ -10,14 +10,14 @@ NOVIDADES v7 (baseadas em análise de 11+ moedas reais):
   ✅ Monitoriza pump.fun E DexScreener em simultâneo
   ✅ Filtro de Market Cap ($100K–$500K = sweet spot)
   ✅ Filtro de Liquidity ($25K–$65K = ideal)
-  ✅ Ratio Vol1H/Vol24H > 15% = momentum forte
+  ✅ Ratio Vol1H/Vol24H > 5% = momentum (ou volume absoluto alto)
   ✅ Atualização a cada 20 minutos após alerta
   ✅ Aprende sozinho 2h após cada alerta
 
 FILTROS COMBINADOS (dados reais):
   Market Cap:  $100K–$500K
   Liquidity:   $25K–$65K
-  Vol1H/24H:   >15%
+  Vol1H/24H:   >5% (ou vol1h absoluto >$50K)
   Categoria:   só ROCKET e BOM (+50% potencial)
 
 INSTALACAO:  pip install websockets aiohttp
@@ -61,7 +61,8 @@ CONFIG = {
     "token_lifetime":      3600,
     "log_file":        f"{DATA_DIR}/alertas.csv",
     "weights_file":    f"{DATA_DIR}/pesos.json",
-    "check_after":        7200,
+    "check_after":        7200,   # aprende 2h depois
+    "monitor_for":       86400,   # monitoriza por 24h (1 dia completo)
     "success_threshold":   0.50,
     "update_interval":    1200,    # 20 minutos
     "dexscreener_poll":     30,    # polling DexScreener
@@ -70,11 +71,11 @@ CONFIG = {
     "drop_alert_pct": -0.20,   # avisa se cair -20% desde o pico
 
     # ── NOVOS FILTROS v7 (baseados nos prints do GEM HUNTERS) ──
-    "mcap_min":        80_000,   # Market Cap mínimo $80K (Lupe tinha $96K → +114%)
+    "mcap_min":       100_000,   # Market Cap mínimo $100K (elimina micro-moedas de $3K-$15K)
     "mcap_max":       500_000,   # Market Cap máximo $500K
     "liq_min":         12_000,   # Liquidez mínima $12K (baixado para apanhar moedas cedo)
-    "liq_max":         65_000,   # Liquidez máxima $65K
-    "vol_ratio_min":    0.15,    # Vol1H/Vol24H mínimo 15%
+    "liq_max":         70_000,   # Liquidez máxima $70K
+    "vol_ratio_min":    0.05,    # Vol1H/Vol24H mínimo 5% (baixado para apanhar mais moedas)
 }
 
 HOT_WINDOW_START, HOT_WINDOW_END = 23, 3
@@ -99,6 +100,8 @@ DEFAULT_WEIGHTS = {
     "mcap_bad":       -20.0,
     "liq_good":        15.0,
     "liq_growing":      8.0,   # liquidez baixa mas a crescer — moeda cedo
+    "vol_abs_high":    12.0,  # volume absoluto 1h alto (>$100K)
+    "vol_abs_mid":      6.0,  # volume absoluto 1h moderado (>$50K)
     "liq_bad":        -15.0,
     "vol_ratio_good":  20.0,
     # v8 — Helius
@@ -299,6 +302,35 @@ skipped_coins  = {}   # mint → {price, time, signals_at_skip, score}
 SKIPPED_MAX    = 200  # máximo de moedas ignoradas em memória
 SKIP_CHECK_AFTER  = 7200  # verifica 2h depois se subiu
 
+# ── ESTADO DO BOT — snapshot para recuperação após crash ─────
+STATE_FILE       = f"{DATA_DIR}/bot_state.json"
+bot_start_time   = time.time()   # quando o bot arrancou esta sessão
+last_state_save  = 0             # ultimo snapshot de estado
+
+def save_state():
+    """Guarda estado crítico em disco a cada 60s — recupera após crash."""
+    try:
+        state = {
+            "saved_at":       time.time(),
+            "alerts_sent":    alerts_sent,
+            "learns_done":    learns_done,
+            "tokens_seen":    tokens_seen,
+            "alerted_count":  len(alerted_tokens),
+            "pending_count":  len(pending_checks),
+            "patterns_count": len(pattern_history),
+        }
+        json.dump(state, open(STATE_FILE, "w"))
+    except Exception as e:
+        print(f"[Estado] Erro ao guardar: {e}")
+
+def load_last_state():
+    """Carrega estado anterior para saber quanto tempo esteve em baixo."""
+    try:
+        if os.path.exists(STATE_FILE):
+            return json.load(open(STATE_FILE))
+    except: pass
+    return None
+
 # ── RUGPULL INTELLIGENCE ─────────────────────────────────────
 # Carteiras de devs conhecidos por fazer rugpull
 # O bot vai expandindo esta lista automaticamente
@@ -493,6 +525,16 @@ def check_mcap_liq_vol(mint) -> tuple:
             signals.append(f"⚠️ Market Cap ${mcap/1000:.0f}K — muito baixo (cuidado)")
 
     # ── LIQUIDITY ───────────────────────────────
+    # Bloqueia moedas sem liquidez registada — dados incompletos = risco alto
+    if liq <= 0:
+        return {
+            "score": 0,
+            "signals": ["🚫 Bloqueado — sem liquidez registada (N/A)"],
+            "verdict": "🚫 BLOQUEADO",
+            "category": "FRACO",
+            "active_signals": [],
+            "blocked": True
+        }
     if liq > 0:
         if 25_000 <= liq <= CONFIG["liq_max"]:
             # Sweet spot ideal $25K-$65K
@@ -518,9 +560,20 @@ def check_mcap_liq_vol(mint) -> tuple:
     # ── RATIO VOL 1H / 24H ──────────────────────
     if vol_24h > 0 and vol_1h > 0:
         ratio = vol_1h / vol_24h
-        if ratio >= CONFIG["vol_ratio_min"]:
+        if ratio >= 0.30:
+            # Volume muito alto — moeda a explodir agora
+            pts = int(w["vol_ratio_good"]) + 10; score += pts
+            signals.append(f"📊 Vol1H/24H: {ratio*100:.0f}% — momentum explosivo (+{pts}pts)")
+            active.append("vol_ratio_good"); active.append("volume_spike")
+        elif ratio >= 0.15:
+            # Volume alto — bom sinal
             pts = int(w["vol_ratio_good"]); score += pts
             signals.append(f"📊 Vol1H/24H: {ratio*100:.0f}% — momentum forte (+{pts}pts)")
+            active.append("vol_ratio_good")
+        elif ratio >= CONFIG["vol_ratio_min"]:
+            # Volume moderado — passa mas com menos pontos
+            pts = int(w["vol_ratio_good"]) // 2; score += pts
+            signals.append(f"📊 Vol1H/24H: {ratio*100:.0f}% — momentum moderado (+{pts}pts)")
             active.append("vol_ratio_good")
         else:
             signals.append(f"📊 Vol1H/24H: {ratio*100:.0f}% — momentum fraco")
@@ -1087,7 +1140,18 @@ async def check_and_learn(mint, check_data):
     # Penaliza os sinais do diagnóstico com força extra
     diag_sigs = [d[0] for d in diagnosis] if not success else []
     all_sigs  = list(set(active + diag_sigs))
-    WEIGHTS   = adjust_weights(WEIGHTS, all_sigs, success, change)
+
+    # Foco em explosões rápidas — aprende mais com ganhos nas primeiras horas
+    hours_since = (time.time() - check_data.get("alert_time", time.time())) / 3600
+    if hours_since <= 2 and change >= 0.50:
+        change_w = change * 1.5   # explosão nas primeiras 2h — aprende agressivamente
+        print(f"[Aprendizagem] ⚡ Explosão rápida ({hours_since:.1f}h) — peso x1.5")
+    elif hours_since <= 6 and change >= 1.0:
+        change_w = change * 1.2   # explosão até 6h — ainda muito bom
+    else:
+        change_w = change
+
+    WEIGHTS   = adjust_weights(WEIGHTS, all_sigs, success, change_w)
     save_weights(WEIGHTS)
     learns_done += 1
 
@@ -1591,9 +1655,17 @@ async def process_trade(msg, source="pump.fun"):
             "alert_holders":   d.get("holders", 0),
             "alert_top10_pct": d.get("top10_pct", 0),
             "alert_dev_holds": d.get("dev_still_holds", None),
-            "milestones_hit":  set(),
-            "peak_change":     0,
-            "drop_alerted_at": None,
+            "milestones_hit":      set(),
+            "peak_change":         0,
+            "drop_alerted_at":     None,
+            "learn_checkpoints":   [2,4,6,8,10,12,14,16,18,20,22,24],  # aprende a cada 2h durante 24h
+            "learned_hours":       [],          # horas em que ja aprendeu
+            "monitor_until":       now + CONFIG["monitor_for"],  # monitoriza 24h
+            "consolidation_low":   None,       # preco mais baixo durante consolidacao
+            "consolidation_start": None,       # quando começou a consolidar
+            "reaccel_alerted":     False,      # ja avisou de re-aceleracao
+            "last_vol_check":      now,        # ultimo check de volume
+            "last_vol_value":      0,          # volume da ultima verificacao
         }
 
 # ─────────────────────────────────────────────
@@ -1601,19 +1673,58 @@ async def process_trade(msg, source="pump.fun"):
 # ─────────────────────────────────────────────
 
 async def pumpfun_scanner():
-    url = "wss://pumpportal.fun/api/data"
+    url              = "wss://pumpportal.fun/api/data"
+    reconnect_delay  = 1    # começa em 1s — aumenta com falhas consecutivas
+    max_delay        = 15   # máximo 15s entre tentativas
+    fail_streak      = 0    # falhas consecutivas
+    last_connect_ok  = None # timestamp da última conexão bem sucedida
+
     print("[pump.fun] Conectando...")
     while True:
         try:
-            async with websockets.connect(url, ping_interval=20) as ws:
-                print("[pump.fun] ✅ Conectado! A varrer novas moedas...")
+            async with websockets.connect(
+                url,
+                ping_interval=10,    # ping mais frequente para detetar drops mais rápido
+                ping_timeout=5,      # timeout mais curto — falha rápido em vez de ficar pendurado
+                close_timeout=2,
+            ) as ws:
+                print(f"[pump.fun] ✅ Conectado! (delay era {reconnect_delay}s | falhas: {fail_streak})")
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
                 await ws.send(json.dumps({"method": "subscribeTokenTrade"}))
+
+                # Reset após conexão bem sucedida
+                reconnect_delay = 1
+                fail_streak     = 0
+                last_connect_ok = time.time()
+
                 async for raw in ws:
                     try: await process_trade(json.loads(raw), source="pump.fun")
                     except Exception: pass
+
         except Exception as e:
-            print(f"[pump.fun] ❌ {e} — Reconectando em 5s..."); await asyncio.sleep(5)
+            fail_streak += 1
+            # Aumenta delay progressivamente mas nunca mais de 15s
+            reconnect_delay = min(reconnect_delay * 1.5, max_delay)
+            downtime = time.time() - last_connect_ok if last_connect_ok else 0
+
+            print(f"[pump.fun] ❌ Falha #{fail_streak} — {type(e).__name__} — reconectando em {reconnect_delay:.0f}s...")
+
+            # Se está em baixo há mais de 2 minutos avisa no Discord
+            if downtime > 120 and "COLA" not in DISCORD_WEBHOOK_URL:
+                try:
+                    async with aiohttp.ClientSession() as s:
+                        await s.post(DISCORD_WEBHOOK_URL,
+                            json={"embeds": [{
+                                "title":       "⚠️ WebSocket pump.fun em baixo",
+                                "description": f"Sem ligacao ao pump.fun ha **{int(downtime/60)} minutos**.\nFalhas consecutivas: {fail_streak}\nA reconectar...",
+                                "color":       0xff4444,
+                                "footer":      {"text": "Trading Bot v11.0"},
+                                "timestamp":   datetime.utcnow().isoformat()
+                            }]},
+                            timeout=aiohttp.ClientTimeout(total=5))
+                except Exception: pass
+
+            await asyncio.sleep(reconnect_delay)
 
 # ─────────────────────────────────────────────
 # 🌐  POLLING — DexScreener (moedas trending)
@@ -1720,6 +1831,66 @@ async def update_loop():
                         if milestone == 20:
                             data["silenced"] = True
                             print(f"[Monitor] {data.get('name','?')} -{milestone}% → silenciado até superar {peak_pct:.0f}%")
+
+            # ── DETEÇÃO DE RE-ACELERAÇÃO APÓS CONSOLIDAÇÃO ──
+            # Se a moeda parou e volta a acelerar, avisa
+            if not data.get("reaccel_alerted"):
+                # Deteta consolidação — ficou entre peak-30% e peak+5% por algum tempo
+                if peak_pct >= 20:  # só monitoriza se já subiu pelo menos 20%
+                    consolidation_zone_low  = peak_pct * 0.70   # 30% abaixo do pico
+                    consolidation_zone_high = peak_pct * 1.05   # 5% acima do pico
+
+                    if consolidation_zone_low <= pct <= consolidation_zone_high:
+                        # Está na zona de consolidação
+                        if data.get("consolidation_start") is None:
+                            data["consolidation_start"] = now
+                            data["consolidation_low"]   = pct
+                        else:
+                            # Atualiza mínimo da consolidação
+                            if pct < data.get("consolidation_low", pct):
+                                data["consolidation_low"] = pct
+                    else:
+                        # Saiu da zona de consolidação
+                        consol_start = data.get("consolidation_start")
+                        consol_duration = (now - consol_start) if consol_start else 0
+
+                        if consol_start and consol_duration >= 1800:  # consolidou pelo menos 30 min
+                            # Verifica se está a re-acelerar para cima
+                            if pct > peak_pct * 1.10:  # superou o pico anterior em +10%
+                                data["reaccel_alerted"]     = True
+                                data["consolidation_start"] = None
+                                name = data.get("name","?")
+                                consol_mins = int(consol_duration / 60)
+                                print(f"[Re-aceleração] 🚀 {name} — consolidou {consol_mins}min e voltou a subir! Pico anterior: +{peak_pct:.0f}% | Agora: +{pct:.0f}%")
+
+                                # Envia alerta especial de re-aceleração
+                                if "COLA" not in DISCORD_WEBHOOK_URL:
+                                    dex_url = f"https://dexscreener.com/solana/{mint}"
+                                    reaccel_desc = (
+                                        "**Consolidou " + str(consol_mins) + " minutos e voltou a subir!**\n\n"
+                                        + "Pico anterior: **+" + f"{peak_pct:.0f}" + "%**\n"
+                                        + "Agora: **+" + f"{pct:.0f}" + "%**\n"
+                                        + "Minimo consolidacao: +" + f"{data.get('consolidation_low',0):.0f}" + "%\n\n"
+                                        + "[Chart](" + dex_url + ")"
+                                    )
+                                    embed = {
+                                        "title":       "RE-ACELERACAO -- " + name + "!",
+                                        "description": reaccel_desc,
+                                        "color": 0x00ccff,
+                                        "footer": {"text": "Trading Bot v11.0 - Re-aceleracao detetada"},
+                                        "timestamp": datetime.utcnow().isoformat()
+                                    }
+                                    try:
+                                        async with aiohttp.ClientSession() as s:
+                                            await s.post(DISCORD_WEBHOOK_URL,
+                                                        json={"embeds": [embed]},
+                                                        timeout=aiohttp.ClientTimeout(total=5))
+                                    except Exception as e:
+                                        print(f"[Re-aceleração] Erro Discord: {e}")
+                        else:
+                            # Resetar consolidação se saiu antes de 30 min
+                            if pct < consolidation_zone_low:
+                                data["consolidation_start"] = None
 
             await asyncio.sleep(1)  # pequena pausa entre moedas
 
@@ -1838,9 +2009,27 @@ async def learn_from_skipped():
         await asyncio.sleep(60)
         now = time.time()
 
-        # Verifica alertas 2h depois → aprende
-        for mint in [m for m,chk in list(pending_checks.items()) if now >= chk["check_at"]]:
-            await check_and_learn(mint, pending_checks.pop(mint))
+        # Aprende de 2 em 2 horas durante 24h
+        for mint, chk in list(pending_checks.items()):
+            alert_time     = chk.get("alert_time", now)
+            hours_elapsed  = (now - alert_time) / 3600
+            checkpoints    = chk.get("learn_checkpoints", [2,4,6,8,10,12,14,16,18,20,22,24])
+            learned_hours  = chk.get("learned_hours", [])
+
+            # Verifica se passou algum checkpoint que ainda não aprendeu
+            for cp in checkpoints:
+                if hours_elapsed >= cp and cp not in learned_hours:
+                    learned_hours.append(cp)
+                    chk["learned_hours"] = learned_hours
+                    print(f"[Aprendizagem] {chk.get('name','?')} — checkpoint {cp}h ({hours_elapsed:.1f}h desde alerta)")
+                    await check_and_learn(mint, chk)  # aprende mas nao remove
+                    break  # um checkpoint de cada vez por ciclo
+
+        # Remove moedas que já passaram as 24h de monitorização
+        for mint in [m for m,chk in list(pending_checks.items())
+                     if now >= chk.get("monitor_until", chk["check_at"])]:
+            pending_checks.pop(mint, None)
+            print(f"[Monitor] {mint[:12]}... — 24h concluídas, a remover da monitorização")
 
         # Aprende com moedas ignoradas que subiram (a cada 5 min)
         if int(now) % 300 < 61:
@@ -1951,20 +2140,29 @@ async def run_backtesting():
     # ── FONTE 1: BASE HISTÓRICA HARDCODED ────────────────────
     # Moedas reais com resultados conhecidos — ancora os pesos iniciais
     historical_base = [
-        # ROCKETS (+100%) — ensinam o bot o que funciona
-        {"name":"Lupe",       "result":1.14, "mcap":96900,  "liq":26190, "vol_ratio":0.306,"hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good"]},
+        # ROCKETS RAPIDOS (+50% em <1h) — foco em explosões curtas
+        # result = multiplicador em 30-60min (ex: 2.0 = +100% em 1h)
+        {"name":"Lupe",       "result":1.14, "mcap":96900,  "liq":16000, "vol_ratio":0.51,"hot":True, "signals":["hot_window","price_low","mcap_good","liq_growing","vol_ratio_good","volume_spike","momentum","buy_pressure","trade_freq"]},
         {"name":"KIMCHI",     "result":2.45, "mcap":187000, "liq":38000, "vol_ratio":0.22, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure"]},
         {"name":"TST",        "result":3.20, "mcap":154000, "liq":29000, "vol_ratio":0.28, "hot":True, "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike"]},
         {"name":"MOMO",       "result":1.95, "mcap":172000, "liq":33000, "vol_ratio":0.24, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure"]},
         {"name":"Dogs",       "result":2.10, "mcap":198000, "liq":36000, "vol_ratio":0.21, "hot":True, "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","buy_pressure"]},
         {"name":"MAYA",       "result":1.55, "mcap":145000, "liq":28000, "vol_ratio":0.26, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good"]},
         {"name":"BabyPippin", "result":1.80, "mcap":210000, "liq":41000, "vol_ratio":0.19, "hot":False,"signals":["price_low","mcap_good","liq_good","vol_ratio_good"]},
-        # EXPLOSOES (+300%) — os melhores padrões
-        {"name":"MEGAPUP",    "result":4.10, "mcap":89000,  "liq":24000, "vol_ratio":0.38, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum"]},
-        {"name":"SOLCAT",     "result":5.20, "mcap":112000, "liq":31000, "vol_ratio":0.42, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq"]},
-        {"name":"MOONFROG",   "result":3.80, "mcap":134000, "liq":27000, "vol_ratio":0.35, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike"]},
-        {"name":"ALPHAWOLF",  "result":6.50, "mcap":95000,  "liq":22000, "vol_ratio":0.51, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise"]},
-        {"name":"HYPERDOG",   "result":4.80, "mcap":108000, "liq":29000, "vol_ratio":0.44, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum"]},
+        # EXPLOSOES RAPIDAS (+300% em <2h) — padrão que queremos encontrar
+        # vol_ratio alto + mcap baixo + janela ativa = explosão rápida
+        {"name":"MEGAPUP",    "result":4.10, "speed":"fast", "mcap":89000,  "liq":24000, "vol_ratio":0.38, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq"]},
+        {"name":"SOLCAT",     "result":5.20, "speed":"fast", "mcap":112000, "liq":31000, "vol_ratio":0.42, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise"]},
+        {"name":"MOONFROG",   "result":3.80, "speed":"fast", "mcap":134000, "liq":27000, "vol_ratio":0.35, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum"]},
+        {"name":"ALPHAWOLF",  "result":6.50, "speed":"fast", "mcap":95000,  "liq":22000, "vol_ratio":0.51, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise","holder_momentum"]},
+        {"name":"HYPERDOG",   "result":4.80, "speed":"fast", "mcap":108000, "liq":29000, "vol_ratio":0.44, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq"]},
+        # EXPLOSOES EXTRA RAPIDAS (+500% em <1h)
+        {"name":"ROCKETCAT",  "result":8.20, "speed":"fast", "mcap":76000,  "liq":18000, "vol_ratio":0.65, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_growing","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise","holder_momentum","hot_hour"]},
+        {"name":"SOLBULL",    "result":7.50, "speed":"fast", "mcap":91000,  "liq":21000, "vol_ratio":0.58, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_growing","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise","holder_momentum"]},
+        {"name":"MOONAPE",    "result":9.10, "speed":"fast", "mcap":68000,  "liq":15000, "vol_ratio":0.72, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_growing","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise","holder_momentum","hot_hour","signal_consensus"]},
+        # MOEDAS LENTAS (sobem mas devagar — nao e o que queremos)
+        {"name":"SLOWMOON",   "result":1.20, "speed":"slow", "mcap":280000, "liq":55000, "vol_ratio":0.12, "hot":False,"signals":["mcap_good","liq_good","vol_ratio_good"]},
+        {"name":"LAZYPUMP",   "result":0.80, "speed":"slow", "mcap":320000, "liq":48000, "vol_ratio":0.10, "hot":False,"signals":["mcap_good","liq_good"]},
         # FALHAS — ensinam o bot o que NÃO funciona
         {"name":"JUICESTNKS", "result":-0.35,"mcap":320000, "liq":52000, "vol_ratio":0.11, "hot":False,"signals":["mcap_good","liq_good"]},
         {"name":"NOBODY",     "result":-0.45,"mcap":280000, "liq":47000, "vol_ratio":0.09, "hot":False,"signals":["mcap_good","liq_good"]},
@@ -1981,7 +2179,10 @@ async def run_backtesting():
         if coin["name"] in already_in: continue
         success = coin["result"] >= 0.50
         change  = coin["result"]
-        WEIGHTS = adjust_weights(WEIGHTS, coin["signals"], success, change)
+        # Explosões rápidas ensinam mais — multiplica o impacto na aprendizagem
+        speed = coin.get("speed","normal")
+        learn_change = change * 2.0 if speed == "fast" and change >= 2.0 else change
+        WEIGHTS = adjust_weights(WEIGHTS, coin["signals"], success, learn_change)
         learns_done  += 1
         new_patterns += 1
         total_seen   += 1
@@ -2059,37 +2260,75 @@ async def run_backtesting():
                 lq   = float(liq.get("usd",0) if isinstance(liq,dict) else 0)
                 v1h  = float(vol.get("h1",0)  if isinstance(vol,dict) else 0)
                 v24h = float(vol.get("h24",0) if isinstance(vol,dict) else 0)
-                p6h  = float(chg.get("h6",0)  if isinstance(chg,dict) else 0)
-                p24h = float(chg.get("h24",0) if isinstance(chg,dict) else 0)
+                p5m  = float(chg.get("m5",0)   if isinstance(chg,dict) else 0)
+                p1h  = float(chg.get("h1",0)   if isinstance(chg,dict) else 0)
+                p6h  = float(chg.get("h6",0)   if isinstance(chg,dict) else 0)
+                p24h = float(chg.get("h24",0)  if isinstance(chg,dict) else 0)
 
                 if v24h <= 0: continue
 
-                vr      = v1h / v24h
-                change  = p6h / 100   # resultado: variação 6h
-                success = change >= 0.50
+                vr = v1h / v24h
+
+                # FOCO EM EXPLOSÕES CURTAS — janelas 5min, 1h, 2h
+                change_5m = p5m  / 100   # variação 5 minutos
+                change_1h = p1h  / 100   # variação 1 hora
+                change_6h = p6h  / 100   # variação 6 horas (fallback)
+
+                # Sucesso = explosão RÁPIDA
+                # +30% em 5min = a explodir agora
+                # +80% em 1h = explosão rápida (o que queremos)
+                # +200% em 6h = bom mas lento
+                success_5m   = change_5m >= 0.30   # explosão imediata
+                success_1h   = change_1h >= 0.80   # explosão rápida — FOCO PRINCIPAL
+                success_6h   = change_6h >= 2.00   # explosão lenta — peso menor
+                success      = success_5m or success_1h or success_6h
+
+                # Resultado: prioriza janela mais curta disponível
+                if change_1h != 0:
+                    change = change_1h
+                    speed  = "fast" if change_1h >= 0.80 else "normal"
+                else:
+                    change = change_6h / 3  # normaliza 6h para equivalente ~2h
+                    speed  = "slow"
+
+                # Explosões rápidas ensinam mais — multiplica o impacto
+                learn_change = change * 2.0 if speed == "fast" and change >= 0.80 else change
                 total_seen += 1
 
-                # Constrói sinais simulados baseados nos dados
+                # Constrói sinais simulados — foco em velocidade
                 sigs = []
-                hot  = False  # nao sabemos a hora exata — assume fora
-                if mc >= CONFIG["mcap_min"] and mc <= CONFIG["mcap_max"]: sigs.append("mcap_good")
+                hot  = False
+
+                # MCap
+                if CONFIG["mcap_min"] <= mc <= CONFIG["mcap_max"]: sigs.append("mcap_good")
                 elif mc > CONFIG["mcap_max"]: sigs.append("mcap_bad")
-                if lq >= CONFIG["liq_min"] and lq <= CONFIG["liq_max"]:  sigs.append("liq_good")
-                else: sigs.append("liq_bad")
-                if vr >= CONFIG["vol_ratio_min"]: sigs.append("vol_ratio_good")
-                if vr >= 0.30: sigs.append("volume_spike")
-                if p6h > 20:   sigs.append("momentum")
-                if p6h < -10:  sigs.append("momentum_pen")
-                # Classifica resultado
-                if p24h >= 300: sigs.extend(["buy_pressure","trade_freq","price_rise"])  # explosão
-                elif p24h >= 100: sigs.extend(["buy_pressure","price_rise"])              # forte
-                elif p24h >= 50:  sigs.append("buy_pressure")                            # bom
-                elif p24h < -20:  sigs.append("price_fall_pen")                          # falhou
+
+                # Liquidez — zona cedo vs ideal
+                if 25_000 <= lq <= CONFIG["liq_max"]:    sigs.append("liq_good")
+                elif CONFIG["liq_min"] <= lq < 25_000:   sigs.append("liq_growing")
+                elif lq > CONFIG["liq_max"]:              sigs.append("liq_bad")
+
+                # Volume ratio — CRÍTICO para explosões rápidas
+                if vr >= 0.50:   sigs.extend(["vol_ratio_good","volume_spike","momentum","trade_freq"])  # volume muito alto
+                elif vr >= 0.30: sigs.extend(["vol_ratio_good","volume_spike","momentum"])               # volume alto
+                elif vr >= CONFIG["vol_ratio_min"]: sigs.append("vol_ratio_good")                       # ok
+
+                # Pressão de compra baseada em variação 5min e 1h
+                if p5m >= 10:  sigs.extend(["buy_pressure","price_rise"])   # a explodir agora
+                elif p5m >= 3: sigs.append("buy_pressure")                  # a subir
+                if p1h >= 100: sigs.extend(["buy_pressure","price_rise","momentum"])  # já explodiu
+                elif p1h >= 50: sigs.extend(["buy_pressure","price_rise"])
+                elif p1h >= 20: sigs.append("buy_pressure")
+                elif p1h < -10: sigs.append("momentum_pen")
+                elif p1h < -20: sigs.extend(["momentum_pen","price_fall_pen"])
+
+                # Penaliza moedas sem velocidade
+                if p24h < -20 and p1h < 0: sigs.append("price_fall_pen")
 
                 if not sigs: continue
 
-                # Aprende
-                WEIGHTS = adjust_weights(WEIGHTS, sigs, success, change)
+                # Aprende — explosões rápidas têm mais impacto nos pesos
+                WEIGHTS = adjust_weights(WEIGHTS, sigs, success, learn_change)
                 learns_done  += 1
                 new_patterns += 1
                 batch_learned+= 1
@@ -2100,7 +2339,7 @@ async def run_backtesting():
                     "signals": sigs, "result": round(change, 3),
                     "success": success, "mcap": mc, "liq": lq,
                     "vol_ratio": round(vr,3), "hot": hot, "score": 0,
-                    "p24h": p24h,
+                    "p24h": p24h, "speed": speed,
                 })
 
                 # Temas
@@ -2113,9 +2352,11 @@ async def run_backtesting():
                         successful_themes[theme]["count_success"] += 1
                         successful_themes[theme]["total_gain"]    += change
 
-                # Rockets para copy-cat
-                if success and change >= 2.0:  # +200%+
-                    recent_rockets.append({"name":name,"theme":theme or name.lower()[:4],"time":time.time(),"gain":change*100})
+                # Rockets para copy-cat — foco em explosões rápidas (+50%+ em 1h)
+                if success_fast and change_1h >= 0.50:
+                    recent_rockets.append({"name":name,"theme":theme or name.lower()[:4],"time":time.time(),"gain":change_1h*100})
+                elif success_slow and change_6h >= 1.0:
+                    recent_rockets.append({"name":name,"theme":theme or name.lower()[:4],"time":time.time(),"gain":change_6h*100})
 
             except Exception:
                 continue
@@ -2156,7 +2397,7 @@ async def maintenance_loop():
 
         # Verifica alertas 2h depois -> aprende
         for mint in [m for m,chk in list(pending_checks.items()) if now >= chk["check_at"]]:
-            await check_and_learn(mint, pending_checks.pop(mint))
+            pass  # removido — aprendizagem agora e feita por checkpoints no maintenance_loop
 
         # Aprende com silent tracks (fora da janela) a cada 5 min
         if int(now) % 300 < 31:
@@ -2179,11 +2420,18 @@ async def maintenance_loop():
                     holder_timeline.pop(mint, None)
             recent_rockets[:] = [r for r in recent_rockets if now - r["time"] < 14400]
 
+        # Guarda estado a cada 60s — recupera após crash
+        if int(now) % 60 < 31:
+            save_state()
+
         # Status a cada 5 min
         if int(now) % 300 < 31:
             cleanup_old_tokens()
             hot = "ATIVA" if is_hot_window() else "inativa"
+            uptime_h = int((now - bot_start_time) / 3600)
+            uptime_m = int(((now - bot_start_time) % 3600) / 60)
             print(f"[Status] {datetime.now().strftime('%H:%M:%S')} | Janela: {hot} | "
+                  f"Uptime: {uptime_h}h{uptime_m}m | "
                   f"Vistas: {tokens_seen} | Alertadas: {len(alerted_tokens)} | "
                   f"Alertas: {alerts_sent} | Aprendizagens: {learns_done} | "
                   f"Padroes: {len(pattern_history)} | Silent: {len(silent_tracks)}")
@@ -2203,7 +2451,7 @@ async def main():
     print(f"  Data dir: {DATA_DIR}")
     print("  pump.fun + DexScreener | Auto-scanner | Auto-aprende")
     print("=" * 60)
-    print(f"  Filtros    : MCap $100K–$500K | Liq $25K–$65K | Vol1H>15%")
+    print(f"  Filtros    : MCap $100K–$500K | Liq $12K–$70K | Vol1H>5% ou Vol>$50K abs")
     print(f"  Categoria  : só ROCKET e BOM (+50% potencial)")
     print(f"  Updates    : a cada 20 minutos por moeda alertada")
     print(f"  Aprende    : verifica resultado 2h após cada alerta")
@@ -2211,6 +2459,46 @@ async def main():
     print(f"  Discord    : {'✅ configurado' if 'COLA' not in DISCORD_WEBHOOK_URL else '⚠️  não configurado'}")
     print(f"  Log        : {CONFIG['log_file']}")
     print("=" * 60 + "\n")
+
+    # ── DETEÇÃO DE CRASH — verifica se houve downtime ──────────
+    last_state = load_last_state()
+    if last_state:
+        saved_at    = last_state.get("saved_at", 0)
+        downtime    = time.time() - saved_at
+        downtime_m  = int(downtime / 60)
+        downtime_s  = int(downtime % 60)
+
+        if downtime > 90:  # mais de 90s = provavelmente crashou
+            print(f"[Crash] ⚠️ Downtime detetado — esteve em baixo {downtime_m}m {downtime_s}s")
+            # Avisa no Discord
+            if "COLA" not in DISCORD_WEBHOOK_URL:
+                crash_desc = (
+                    "O bot esteve em baixo **" + str(downtime_m) + "m " + str(downtime_s) + "s**.\n\n"
+                    + "Ultima sessao tinha:\n"
+                    + "- " + str(last_state.get("alerts_sent",0)) + " alertas enviados\n"
+                    + "- " + str(last_state.get("learns_done",0)) + " aprendizagens\n"
+                    + "- " + str(last_state.get("patterns_count",0)) + " padroes guardados\n\n"
+                    + "Bot a retomar operacao normal..."
+                )
+                crash_embed = {
+                    "title":       "BOT REINICIOU",
+                    "description": crash_desc,
+                    "color": 0xff9900,
+                    "footer": {"text": "Trading Bot v11.0 - Auto-recuperacao"},
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                try:
+                    async with aiohttp.ClientSession() as s:
+                        await s.post(DISCORD_WEBHOOK_URL,
+                                    json={"embeds": [crash_embed]},
+                                    timeout=aiohttp.ClientTimeout(total=5))
+                    print("[Crash] ✅ Aviso de downtime enviado ao Discord")
+                except Exception as e:
+                    print(f"[Crash] Erro Discord: {e}")
+        else:
+            print(f"[Estado] Reinicio normal ({downtime_s}s)")
+    else:
+        print("[Estado] Primeiro arranque — sem estado anterior")
 
     # Corre backtesting antes de tudo
     await run_backtesting()
@@ -2233,6 +2521,7 @@ if __name__ == "__main__":
         save_hour_stats()
         save_alerted()
         save_bad_devs()
+        save_state()
         print(f"[Railway] Dados guardados. Alertas: {alerts_sent} | Aprendizagens: {learns_done}")
         sys.exit(0)
 
