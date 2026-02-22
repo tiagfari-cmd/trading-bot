@@ -34,7 +34,7 @@ from collections import deque
 # ⚙️  CONFIGURAÇÃO
 # ─────────────────────────────────────────────
 
-BOT_VERSION  = "v11.3 — 22/02/2026"
+BOT_VERSION  = "v11.4 — 22/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -1844,46 +1844,85 @@ async def pumpfun_watchdog():
 # 🌐  POLLING — DexScreener (moedas trending)
 # ─────────────────────────────────────────────
 
+async def _process_dex_pairs(pairs, source):
+    """Processa lista de pares DexScreener — partilhado por todos os endpoints."""
+    count = 0
+    for p in pairs:
+        if p.get("chainId") != "solana": continue
+        mint = p.get("baseToken", {}).get("address")
+        if not mint or mint in alerted_tokens: continue
+        init_token(mint)
+        d   = token_data[mint]
+        chg = p.get("priceChange") or {}
+        d["market_cap"] = float(p.get("fdv") or p.get("marketCap") or 0)
+        d["liquidity"]  = float((p.get("liquidity") or {}).get("usd") or 0)
+        d["vol_1h"]     = float((p.get("volume") or {}).get("h1") or 0)
+        d["vol_24h"]    = float((p.get("volume") or {}).get("h24") or 0)
+        d["p5m"]        = float(chg.get("m5") or 0)
+        d["p1h"]        = float(chg.get("h1") or 0)
+        d["p6h"]        = float(chg.get("h6") or 0)
+        d["p24h"]       = float(chg.get("h24") or 0)
+        d["name"]       = p.get("baseToken", {}).get("name", d.get("name","?"))
+        d["symbol"]     = p.get("baseToken", {}).get("symbol", d.get("symbol","?"))
+        price = float(p.get("priceUsd") or 0)
+        if price > 0: d["prices"].append(price)
+        msg = {"mint": mint, "name": d["name"], "symbol": d["symbol"]}
+        await process_trade(msg, source=source)
+        count += 1
+    return count
+
 async def dexscreener_scanner():
-    """Busca moedas trending no DexScreener para Solana."""
-    print("[DexScreener] Iniciando scanner de trending...")
+    """Polling multi-endpoint DexScreener — backup total ao WebSocket pump.fun."""
+    print("[DexScreener] Iniciando scanner multi-endpoint...")
+
+    # (url, label, intervalo_segundos, limite_pares)
+    endpoints = [
+        ("https://api.dexscreener.com/latest/dex/search?q=solana",              "trending", 30, 30),
+        ("https://api.dexscreener.com/token-boosts/latest/v1",                  "boosted",  60, 20),
+        ("https://api.dexscreener.com/latest/dex/search?q=solana&order=gainers","gainers",  45, 20),
+        ("https://api.dexscreener.com/token-profiles/latest/v1",                "novos",    90, 20),
+    ]
+    last_fetch = {ep[0]: 0 for ep in endpoints}
+
     while True:
         try:
+            now = time.time()
             async with aiohttp.ClientSession() as s:
-                # Trending tokens em Solana
-                async with s.get(
-                    "https://api.dexscreener.com/latest/dex/search?q=solana",
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as r:
-                    if r.status == 200:
-                        data  = await r.json()
-                        pairs = data.get("pairs") or []
-                        for p in pairs[:20]:  # top 20
-                            if p.get("chainId") != "solana": continue
-                            mint = p.get("baseToken", {}).get("address")
-                            if not mint or mint in alerted_tokens: continue
-
-                            # Cria mensagem no formato do process_trade
-                            msg = {
-                                "mint":   mint,
-                                "name":   p.get("baseToken", {}).get("name", "?"),
-                                "symbol": p.get("baseToken", {}).get("symbol", "?"),
-                            }
-                            init_token(mint)
-                            d = token_data[mint]
-                            # Atualiza com dados do DexScreener diretamente
-                            d["market_cap"] = float((p.get("fdv") or p.get("marketCap") or 0))
-                            d["liquidity"]  = float((p.get("liquidity") or {}).get("usd") or 0)
-                            d["vol_1h"]     = float((p.get("volume") or {}).get("h1") or 0)
-                            d["vol_24h"]    = float((p.get("volume") or {}).get("h24") or 0)
-                            price = float(p.get("priceUsd") or 0)
-                            if price > 0: d["prices"].append(price)
-
-                            await process_trade(msg, source="DexScreener")
-
+                for url, label, interval, limit in endpoints:
+                    if now - last_fetch[url] < interval:
+                        continue
+                    last_fetch[url] = now
+                    try:
+                        async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                            if r.status != 200: continue
+                            data  = await r.json()
+                            # token-profiles e token-boosts retornam lista direta
+                            if isinstance(data, list):
+                                pairs = []
+                                for item in data[:limit]:
+                                    addr = item.get("tokenAddress") or item.get("address")
+                                    if not addr: continue
+                                    pairs.append({
+                                        "chainId":     item.get("chainId", "solana"),
+                                        "baseToken":   {"address": addr,
+                                                        "name":    item.get("description", "?"),
+                                                        "symbol":  item.get("symbol", "?")},
+                                        "priceUsd":    str(item.get("price", 0)),
+                                        "fdv":         item.get("marketCap", 0),
+                                        "liquidity":   {"usd": item.get("liquidity", 0)},
+                                        "volume":      {"h1": 0, "h24": 0},
+                                        "priceChange": {},
+                                    })
+                            else:
+                                pairs = (data.get("pairs") or [])[:limit]
+                            found = await _process_dex_pairs(pairs, "DexScreener/" + label)
+                            if found > 0:
+                                print(f"[DexScreener/{label}] {found} novas moedas")
+                    except Exception as e:
+                        print(f"[DexScreener/{label}] Erro: {type(e).__name__}")
         except Exception as e:
-            print(f"[DexScreener] ❌ {e}")
-        await asyncio.sleep(CONFIG["dexscreener_poll"])
+            print(f"[DexScreener] Erro: {e}")
+        await asyncio.sleep(10)
 
 # ─────────────────────────────────────────────
 # ⏱️  LOOPS PERIÓDICOS
