@@ -74,7 +74,7 @@ CONFIG = {
     "drop_alert_pct": -0.20,   # avisa se cair -20% desde o pico
 
     # ── NOVOS FILTROS v7 (baseados nos prints do GEM HUNTERS) ──
-    "mcap_min":       100_000,   # Market Cap mínimo $100K (elimina micro-moedas de $3K-$15K)
+    "mcap_min":        80_000,   # Market Cap mínimo $80K (protege Lupe $96K que fez +120%)
     "mcap_max":       500_000,   # Market Cap máximo $500K
     "liq_min":         12_000,   # Liquidez mínima $12K (baixado para apanhar moedas cedo)
     "liq_max":         70_000,   # Liquidez máxima $70K
@@ -528,12 +528,13 @@ def check_mcap_liq_vol(mint) -> tuple:
             signals.append(f"⚠️ Market Cap ${mcap/1000:.0f}K — muito baixo (cuidado)")
 
     # ── LIQUIDITY ───────────────────────────────
-    # Bloqueia moedas sem liquidez registada — dados incompletos = risco alto
-    if liq <= 0:
+    # Bloqueia moedas sem liquidez ou demasiado baixa ($2K nao chega para mover nada)
+    if liq < CONFIG["liq_min"]:
+        motivo = "N/A" if liq <= 0 else f"${liq/1000:.1f}K (minimo ${CONFIG['liq_min']//1000}K)"
         return {
             "score": 0,
-            "signals": ["🚫 Bloqueado — sem liquidez registada (N/A)"],
-            "verdict": "🚫 BLOQUEADO",
+            "signals": [f"Bloqueado liquidez {motivo}"],
+            "verdict": "BLOQUEADO",
             "category": "FRACO",
             "active_signals": [],
             "blocked": True
@@ -2145,7 +2146,7 @@ async def run_backtesting():
     historical_base = [
         # ROCKETS RAPIDOS (+50% em <1h) — foco em explosões curtas
         # result = multiplicador em 30-60min (ex: 2.0 = +100% em 1h)
-        {"name":"Lupe",       "result":1.14, "mcap":96900,  "liq":16000, "vol_ratio":0.51,"hot":True, "signals":["hot_window","price_low","mcap_good","liq_growing","vol_ratio_good","volume_spike","momentum","buy_pressure","trade_freq"]},
+        {"name":"Lupe",       "result":2.20, "mcap":96900,  "liq":16000, "vol_ratio":0.51,"hot":True, "signals":["hot_window","price_low","mcap_good","liq_growing","vol_ratio_good","volume_spike","momentum","buy_pressure","trade_freq"]},
         {"name":"KIMCHI",     "result":2.45, "mcap":187000, "liq":38000, "vol_ratio":0.22, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure"]},
         {"name":"TST",        "result":3.20, "mcap":154000, "liq":29000, "vol_ratio":0.28, "hot":True, "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike"]},
         {"name":"MOMO",       "result":1.95, "mcap":172000, "liq":33000, "vol_ratio":0.24, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure"]},
