@@ -34,6 +34,9 @@ from collections import deque
 # ⚙️  CONFIGURAÇÃO
 # ─────────────────────────────────────────────
 
+BOT_VERSION  = "v11.1 — 22/02/2026"
+# Muda este valor sempre que fizeres update para identificar a versao a correr
+
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
 HELIUS_API_KEY      = os.environ.get("HELIUS_API_KEY", "COLA_AQUI_A_TUA_HELIUS_KEY")
 
@@ -1877,7 +1880,7 @@ async def update_loop():
                                         "title":       "RE-ACELERACAO -- " + name + "!",
                                         "description": reaccel_desc,
                                         "color": 0x00ccff,
-                                        "footer": {"text": "Trading Bot v11.0 - Re-aceleracao detetada"},
+                                        "footer": {"text": f"Trading Bot {BOT_VERSION} - Re-aceleracao detetada"},
                                         "timestamp": datetime.utcnow().isoformat()
                                     }
                                     try:
@@ -2063,7 +2066,7 @@ async def send_rugpull_alert(mint, name, liq_before, liq_now, price_drop_pct):
             f"[Chart]({dex_url})"
         ),
         "color": 0xff0000,
-        "footer": {"text": "Trading Bot v11.0 • ALERTA URGENTE — não é conselho financeiro"},
+        "footer": {"text": f"Trading Bot {BOT_VERSION} • ALERTA URGENTE — não é conselho financeiro"},
         "timestamp": datetime.utcnow().isoformat()
     }
     try:
@@ -2484,7 +2487,7 @@ async def main():
                     "title":       "BOT REINICIOU",
                     "description": crash_desc,
                     "color": 0xff9900,
-                    "footer": {"text": "Trading Bot v11.0 - Auto-recuperacao"},
+                    "footer": {"text": f"Trading Bot {BOT_VERSION} - Auto-recuperacao"},
                     "timestamp": datetime.utcnow().isoformat()
                 }
                 try:
@@ -2499,6 +2502,23 @@ async def main():
             print(f"[Estado] Reinicio normal ({downtime_s}s)")
     else:
         print("[Estado] Primeiro arranque — sem estado anterior")
+
+    # ── MENSAGEM DE ARRANQUE NO DISCORD ─────────────────────
+    if "COLA" not in DISCORD_WEBHOOK_URL:
+        startup_embed = {
+            "title":       f"🤖 Bot Arrancou — {BOT_VERSION}",
+            "description": "Nova sessao iniciada! | MCap $100K-$500K | Liq $12K-$70K | Vol>5% | Janela: 23h-03h",
+            "color": 0x00ff88,
+            "footer": {"text": f"Trading Bot {BOT_VERSION}"},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        try:
+            async with aiohttp.ClientSession() as s:
+                await s.post(DISCORD_WEBHOOK_URL,
+                            json={"embeds": [startup_embed]},
+                            timeout=aiohttp.ClientTimeout(total=5))
+        except Exception as e:
+            print(f"[Arranque] Erro Discord: {e}")
 
     # Corre backtesting antes de tudo
     await run_backtesting()
