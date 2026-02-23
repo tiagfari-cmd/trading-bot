@@ -29,11 +29,11 @@ import asyncio, csv, json, os, time, aiohttp, websockets
 from datetime import datetime, timezone
 from collections import deque
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# ⚙️  CONFIGURAÇÃO
+# CONFIGURAO
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 BOT_VERSION  = “v11.5 — 22/02/2026”
 
@@ -42,22 +42,22 @@ BOT_VERSION  = “v11.5 — 22/02/2026”
 DISCORD_WEBHOOK_URL = os.environ.get(“DISCORD_WEBHOOK_URL”, “COLA_AQUI_O_TEU_WEBHOOK_URL”)
 HELIUS_API_KEY      = os.environ.get(“HELIUS_API_KEY”, “COLA_AQUI_A_TUA_HELIUS_KEY”)
 
-# ── RAILWAY API — para guardar aprendizagem como variável de ambiente ──
+# – RAILWAY API - para guardar aprendizagem como varivel de ambiente –
 
-# Adiciona no Railway: RAILWAY_API_TOKEN (Settings → Tokens → New Token)
+# Adiciona no Railway: RAILWAY_API_TOKEN (Settings -> Tokens -> New Token)
 
-# e RAILWAY_SERVICE_ID (está no URL do teu serviço)
+# e RAILWAY_SERVICE_ID (est no URL do teu servio)
 
 RAILWAY_API_TOKEN   = os.environ.get(“RAILWAY_API_TOKEN”, “”)
 RAILWAY_SERVICE_ID  = os.environ.get(“RAILWAY_SERVICE_ID”, “”)
 RAILWAY_PROJECT_ID  = os.environ.get(“RAILWAY_PROJECT_ID”, “”)
 RAILWAY_ENV_ID      = os.environ.get(“RAILWAY_ENVIRONMENT_ID”, “”)  # Railway injeta isto automaticamente
 
-# ── RAILWAY: usa /tmp para ficheiros (sobrevive a reinicios) ──
+# – RAILWAY: usa /tmp para ficheiros (sobrevive a reinicios) –
 
-# Para persistência total entre deploys, configura um Volume no Railway
+# Para persistncia total entre deploys, configura um Volume no Railway
 
-# Settings → Volumes → Mount Path: /data
+# Settings -> Volumes -> Mount Path: /data
 
 DATA_DIR = os.environ.get(“RAILWAY_VOLUME_MOUNT_PATH”, “/tmp”)
 
@@ -82,23 +82,23 @@ CONFIG = {
 “drop_alert_pct”: -0.20,   # avisa se cair -20% desde o pico
 
 ```
-# ── NOVOS FILTROS v7 (baseados nos prints do GEM HUNTERS) ──
-"mcap_min":        80_000,   # Market Cap mínimo $80K (protege Lupe $96K que fez +120%)
-"mcap_max":       500_000,   # Market Cap máximo $500K
-"liq_min":         12_000,   # Liquidez mínima $12K (baixado para apanhar moedas cedo)
-"liq_max":         70_000,   # Liquidez máxima $70K
-"vol_ratio_min":    0.05,    # Vol1H/Vol24H mínimo 5% (baixado para apanhar mais moedas)
+# -- NOVOS FILTROS v7 (baseados nos prints do GEM HUNTERS) --
+"mcap_min":        80_000,   # Market Cap mnimo $80K (protege Lupe $96K que fez +120%)
+"mcap_max":       500_000,   # Market Cap mximo $500K
+"liq_min":         12_000,   # Liquidez mnima $12K (baixado para apanhar moedas cedo)
+"liq_max":         70_000,   # Liquidez mxima $70K
+"vol_ratio_min":    0.05,    # Vol1H/Vol24H mnimo 5% (baixado para apanhar mais moedas)
 ```
 
 }
 
 HOT_WINDOW_START, HOT_WINDOW_END = 23, 3
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🧠  PESOS (APRENDIZAGEM)
+# PESOS (APRENDIZAGEM)
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 DEFAULT_WEIGHTS = {
 “hot_window”:      20.0,
@@ -109,18 +109,18 @@ DEFAULT_WEIGHTS = {
 “momentum”:        20.0,
 “momentum_pen”:   -25.0,
 “price_rise”:      20.0,
-“price_fall_pen”: -20.0,  # aumentado — queda de preço é sinal muito negativo
+“price_fall_pen”: -20.0,  # aumentado - queda de preo  sinal muito negativo
 “trade_freq”:      10.0,
-# v7 — filtros mercado
+# v7 - filtros mercado
 “mcap_good”:       20.0,
 “mcap_bad”:       -20.0,
 “liq_good”:        15.0,
-“liq_growing”:      8.0,   # liquidez baixa mas a crescer — moeda cedo
+“liq_growing”:      8.0,   # liquidez baixa mas a crescer - moeda cedo
 “vol_abs_high”:    12.0,  # volume absoluto 1h alto (>$100K)
 “vol_abs_mid”:      6.0,  # volume absoluto 1h moderado (>$50K)
 “liq_bad”:        -15.0,
 “vol_ratio_good”:  20.0,
-# v8 — Helius
+# v8 - Helius
 “holders_good”:    20.0,
 “holders_bad”:    -20.0,
 “dev_sold”:       -35.0,
@@ -128,7 +128,7 @@ DEFAULT_WEIGHTS = {
 “concentration_ok”: 15.0,
 “concentration_bad”:-25.0,
 “buy_sell_5m”:     25.0,
-# v10 — Backtesting + Temas + Whales + Hora
+# v10 - Backtesting + Temas + Whales + Hora
 “pattern_strong”:   35.0,
 “pattern_weak”:    -20.0,
 “theme_hot”:        20.0,
@@ -137,14 +137,14 @@ DEFAULT_WEIGHTS = {
 “rugpull_risk”:    -50.0,
 “hot_hour”:         15.0,   # hora historicamente boa
 “cold_hour”:       -10.0,   # hora historicamente fraca
-# v11 — novas melhorias
+# v11 - novas melhorias
 “holder_momentum”:  35.0,   # holders a crescer rapido
 “copycat_bonus”:    25.0,   # tema de moeda que explodiu recentemente
 “signal_consensus”: 20.0,   # bonus quando 8+ sinais positivos concordam
 “anti_fomo”:       -30.0,   # moeda ja subiu muito antes do bot a ver
 “stop_loss_risk”:  -20.0,   # proximo do pior resultado historico deste padrao
 # Rugpull intelligence
-“bad_dev”:         -60.0,   # dev ja fez rugpull antes — bloqueia quase sempre
+“bad_dev”:         -60.0,   # dev ja fez rugpull antes - bloqueia quase sempre
 “bundle_buy”:      -40.0,   # primeiras compras identicas = bot a simular procura
 “liq_price_diverge”:-30.0, # preco sobe mas liquidez nao acompanha = red flag
 }
@@ -156,7 +156,7 @@ Carrega pesos por ordem de prioridade:
 2. Ficheiro local pesos.json (persiste entre reinicios)
 3. Pesos iniciais hardcoded
 “””
-# Prioridade 1: variável de ambiente (persiste entre deploys no Railway)
+# Prioridade 1: varivel de ambiente (persiste entre deploys no Railway)
 env_weights = os.environ.get(“BOT_WEIGHTS”, “”)
 if env_weights:
 try:
@@ -181,7 +181,7 @@ print("[Aprendizagem] Usando pesos iniciais (baseados em 11+ moedas reais)")
 return dict(DEFAULT_WEIGHTS)
 ```
 
-# Controlo para não spammar a Railway API — só guarda se mudou significativamente
+# Controlo para no spammar a Railway API - s guarda se mudou significativamente
 
 _last_railway_save = 0
 _last_saved_weights = {}
@@ -192,14 +192,14 @@ global _last_railway_save, _last_saved_weights
 
 ```
 if not RAILWAY_API_TOKEN or not RAILWAY_SERVICE_ID or not RAILWAY_ENV_ID:
-    return  # Railway API não configurada — falha silenciosa
+    return  # Railway API no configurada - falha silenciosa
 
-# Só guarda se passaram 10 minutos desde o último save
+# S guarda se passaram 10 minutos desde o ltimo save
 now = time.time()
 if now - _last_railway_save < 600:
     return
 
-# Só guarda se os pesos mudaram significativamente
+# S guarda se os pesos mudaram significativamente
 if _last_saved_weights:
     max_change = max(abs(w.get(k,0) - _last_saved_weights.get(k,0)) for k in w)
     if max_change < 0.5:
@@ -207,7 +207,7 @@ if _last_saved_weights:
 
 try:
     weights_json = json.dumps(w, separators=(',', ':'))
-    # GraphQL mutation para upsert de variável
+    # GraphQL mutation para upsert de varivel
     query = """
     mutation upsertVariables($input: VariableCollectionUpsertInput!) {
         variableCollectionUpsert(input: $input)
@@ -245,13 +245,13 @@ except Exception as e:
 def save_weights(w):
 “”“Guarda pesos no ficheiro local (sempre) e agenda save no Railway.”””
 json.dump(w, open(CONFIG[“weights_file”], “w”), indent=2)
-# Agenda save no Railway de forma assíncrona sem bloquear
+# Agenda save no Railway de forma assncrona sem bloquear
 try:
 loop = asyncio.get_event_loop()
 if loop.is_running():
 asyncio.create_task(save_weights_to_railway(w))
 except Exception:
-pass  # fora de contexto async — só guarda no ficheiro
+pass  # fora de contexto async - s guarda no ficheiro
 
 def adjust_weights(weights, active_signals, success, change_pct=0):
 “””
@@ -265,14 +265,14 @@ Falha grande (<0%): penaliza muito os sinais ativos
 """
 if success:
     # Quanto mais subiu, mais aprende
-    if change_pct >= 2.0:   factor = 0.15   # +200% → aprende muito
-    elif change_pct >= 1.0: factor = 0.10   # +100% → aprende bem
-    else:                   factor = 0.07   # +50%  → aprende normal
+    if change_pct >= 2.0:   factor = 0.15   # +200% -> aprende muito
+    elif change_pct >= 1.0: factor = 0.10   # +100% -> aprende bem
+    else:                   factor = 0.07   # +50%  -> aprende normal
 else:
     # Quanto mais caiu, mais penaliza
-    if change_pct <= -0.3:  factor = -0.12  # caiu >30% → penaliza muito
-    elif change_pct <= 0:   factor = -0.07  # não subiu → penaliza normal
-    else:                   factor = -0.04  # subiu mas <50% → penaliza pouco
+    if change_pct <= -0.3:  factor = -0.12  # caiu >30% -> penaliza muito
+    elif change_pct <= 0:   factor = -0.07  # no subiu -> penaliza normal
+    else:                   factor = -0.04  # subiu mas <50% -> penaliza pouco
 
 for sig in active_signals:
     if sig not in weights: continue
@@ -285,7 +285,7 @@ return weights
 WEIGHTS        = load_weights()
 token_data     = {}
 
-# Carrega tokens já alertados de ficheiro para persistir entre reinicios
+# Carrega tokens j alertados de ficheiro para persistir entre reinicios
 
 ALERTED_FILE = f”{DATA_DIR}/alertados.json”
 def load_alerted():
@@ -296,14 +296,14 @@ return set()
 def save_alerted():
 json.dump(list(alerted_tokens), open(ALERTED_FILE, “w”))
 
-alerted_tokens = load_alerted()  # ← NUNCA repete, mesmo após reiniciar
+alerted_tokens = load_alerted()  # <- NUNCA repete, mesmo aps reiniciar
 
-# ── BLACKLIST — moedas já conhecidas/que já explodiram ────────
+# – BLACKLIST - moedas j conhecidas/que j explodiram ––––
 
-# Estas moedas nunca serão alertadas (já atingiram o seu pico)
+# Estas moedas nunca sero alertadas (j atingiram o seu pico)
 
 BLACKLIST = {
-# 11 moedas analisadas — já explodiram
+# 11 moedas analisadas - j explodiram
 “7xKXNez8D22NwBssQbkzjy4s2ipFrzpmn5hfvWVe2aY5p”,  # TOTO (exemplo)
 “AWpD39myXc7emw5M9cMCofkbo92x5FKWdGHWYpZFdoge”,    # KIMCHI
 “HdvZF538TerjMWc1cmtWVKUaGkS8d77sGH5QaDCCpump”,    # TST
@@ -316,25 +316,25 @@ BLACKLIST = {
 “EtL967sgMgeDDSUrNhtQrbhe4T92idzqf4VuA6H7uGfQ”,   # MAYA
 “6jfRbgs3B1KrhohSZ7KbhJckHZektQs1rRUSwWeZpump”,   # TOTO
 “8QH9scze2hPJjbVmQEnVuV1r59DDcUvQSRQ9ybagpump”,  # Lupe (+114%)
-# Adiciona aqui mais moedas que já explodiram
+# Adiciona aqui mais moedas que j explodiram
 }
 tokens_seen    = 0
 alerts_sent    = 0
 learns_done    = 0
 pending_checks = {}
 
-# ── APRENDIZAGEM AVANÇADA ─────────────────────────────────────
+# – APRENDIZAGEM AVANADA ———————————––
 
 # Moedas que o bot viu mas ignorou (para aprender com oportunidades perdidas)
 
-skipped_coins  = {}   # mint → {price, time, signals_at_skip, score}
-SKIPPED_MAX    = 200  # máximo de moedas ignoradas em memória
+skipped_coins  = {}   # mint -> {price, time, signals_at_skip, score}
+SKIPPED_MAX    = 200  # mximo de moedas ignoradas em memria
 SKIP_CHECK_AFTER  = 7200  # verifica 2h depois se subiu
 
-# ── ESTADO DO BOT — snapshot para recuperação após crash ─────
+# – ESTADO DO BOT - snapshot para recuperao aps crash —–
 
 STATE_FILE       = f”{DATA_DIR}/bot_state.json”
-bot_start_time   = time.time()   # quando o bot arrancou esta sessão
+bot_start_time   = time.time()   # quando o bot arrancou esta sesso
 last_state_save  = 0             # ultimo snapshot de estado
 
 def save_state():
@@ -361,7 +361,7 @@ return json.load(open(STATE_FILE))
 except: pass
 return None
 
-# ── RUGPULL INTELLIGENCE ─────────────────────────────────────
+# – RUGPULL INTELLIGENCE ———————————––
 
 # Carteiras de devs conhecidos por fazer rugpull
 
@@ -383,25 +383,25 @@ BAD_DEV_WALLETS = load_bad_devs()
 
 # Regista o dev de cada token alertado
 
-token_dev_wallet = {}   # mint → dev_wallet
+token_dev_wallet = {}   # mint -> dev_wallet
 
 # Regista primeiras compras de cada token (para bundle detection)
 
-token_early_buys = {}   # mint → [sol_amounts das primeiras 10 compras]
+token_early_buys = {}   # mint -> [sol_amounts das primeiras 10 compras]
 
-# ── SILENT TRACKS — aprende fora da janela sem alertar ────────
+# – SILENT TRACKS - aprende fora da janela sem alertar ––––
 
 # Moedas que passaram os filtros fora da janela 23h-03h
 
 # O bot nao alerta mas aprende com o resultado
 
-silent_tracks    = {}   # mint → {price, time, active, check_at, …}
+silent_tracks    = {}   # mint -> {price, time, active, check_at, …}
 
-# ── BACKTESTING + PATTERN HISTORY ────────────────────
+# – BACKTESTING + PATTERN HISTORY ––––––––––
 
 BACKTEST_FILE   = f”{DATA_DIR}/backtest_history.json”
 pattern_history = []   # [{signals, result, mcap, liq, vol_ratio, hot, timestamp}]
-MAX_HISTORY     = 2000 # máximo de padrões guardados
+MAX_HISTORY     = 2000 # mximo de padres guardados
 
 def load_pattern_history():
 if os.path.exists(BACKTEST_FILE):
@@ -415,11 +415,11 @@ return []
 def save_pattern_history():
 json.dump(pattern_history[-MAX_HISTORY:], open(BACKTEST_FILE, “w”))
 
-pattern_history = load_pattern_history()  # carrega DEPOIS de definir a função
+pattern_history = load_pattern_history()  # carrega DEPOIS de definir a funo
 
-# ── CORRELAÇÃO DE TEMAS ───────────────────────────────
+# – CORRELAO DE TEMAS —————————––
 
-successful_themes = {}  # tema → {count_success, count_total, avg_gain}
+successful_themes = {}  # tema -> {count_success, count_total, avg_gain}
 THEME_KEYWORDS = [
 [“moon”,“luna”,“lunar”],[“dog”,“doge”,“doggo”,“shiba”],
 [“cat”,“kitty”,“meow”,“nyan”],[“frog”,“pepe”,“kek”],
@@ -435,34 +435,34 @@ if any(kw in name_lower for kw in group):
 return group[0]  # usa primeira palavra como tema
 return None
 
-# ── VOLUME POR CARTEIRA ───────────────────────────────
+# – VOLUME POR CARTEIRA —————————––
 
-wallet_volumes = {}  # mint → {wallet: total_sol}
+wallet_volumes = {}  # mint -> {wallet: total_sol}
 
-# ── MOMENTUM DE HOLDERS ──────────────────────────────────────
+# – MOMENTUM DE HOLDERS –––––––––––––––––––
 
 # Regista quantos holders novos por minuto para detetar explosoes
 
-holder_timeline  = {}   # mint → [(timestamp, holder_count), …]
+holder_timeline  = {}   # mint -> [(timestamp, holder_count), …]
 
-# ── COPY-CATS ────────────────────────────────────────────────
+# – COPY-CATS ————————————————
 
-# Moedas que explodiram recentemente — para detetar copy-cats
+# Moedas que explodiram recentemente - para detetar copy-cats
 
 recent_rockets   = []   # [{name, theme, symbol, time, gain}]
 MAX_ROCKETS      = 30
 
-# ── ANTI-FOMO ─────────────────────────────────────────────────
+# – ANTI-FOMO ———————————————––
 
 # Penaliza moedas que JA subiram muito antes do bot as detetar
 
 # (o bot esta a chegar tarde)
 
-# ── CONFIANCA ACUMULADA ───────────────────────────────────────
+# – CONFIANCA ACUMULADA —————————————
 
-# Bónus quando muitos sinais concordam na mesma direcao
+# Bnus quando muitos sinais concordam na mesma direcao
 
-# ── HORA EXATA DO PICO ────────────────────────────────
+# – HORA EXATA DO PICO ––––––––––––––––
 
 # Aprende em que hora do dia as moedas tendem a picar mais
 
@@ -483,13 +483,13 @@ return {}
 def save_hour_stats():
 json.dump(hour_stats, open(HOUR_STATS_FILE, “w”), indent=2)
 
-hour_stats = load_hour_stats()  # carrega DEPOIS de definir a função
+hour_stats = load_hour_stats()  # carrega DEPOIS de definir a funo
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 📊  TOKEN DATA
+# TOKEN DATA
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 def init_token(mint):
 if mint not in token_data:
@@ -538,11 +538,11 @@ peak = max(prices)
 return peak > 0 and prices[-1] < peak * 0.85
 return False
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🔍  FILTROS DE MARKET CAP / LIQUIDITY / VOL
+# FILTROS DE MARKET CAP / LIQUIDITY / VOL
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 def check_mcap_liq_vol(mint) -> tuple:
 “””
@@ -566,7 +566,7 @@ signals = []
 active  = []
 passed  = True  # se falhar filtro duro, bloqueia o alerta
 
-# ── MARKET CAP ──────────────────────────────
+# -- MARKET CAP ------------------------------
 if mcap > 0:
     if CONFIG["mcap_min"] <= mcap <= CONFIG["mcap_max"]:
         pts = int(w["mcap_good"]); score += pts
@@ -581,7 +581,7 @@ if mcap > 0:
     else:
         signals.append(f"⚠️ Market Cap ${mcap/1000:.0f}K — muito baixo (cuidado)")
 
-# ── LIQUIDITY ───────────────────────────────
+# -- LIQUIDITY -------------------------------
 # Bloqueia moedas sem liquidez ou demasiado baixa ($2K nao chega para mover nada)
 if liq < CONFIG["liq_min"]:
     motivo = "N/A" if liq <= 0 else f"${liq/1000:.1f}K (minimo ${CONFIG['liq_min']//1000}K)"
@@ -600,7 +600,7 @@ if liq > 0:
         signals.append(f"💧 Liquidez ${liq/1000:.0f}K — ideal (+{pts}pts)")
         active.append("liq_good")
     elif CONFIG["liq_min"] <= liq < 25_000:
-        # Zona cedo $12K-$25K — liquidez baixa mas moeda nova com potencial
+        # Zona cedo $12K-$25K - liquidez baixa mas moeda nova com potencial
         # Precisa de compensar com outros sinais fortes
         pts = int(w.get("liq_growing", 8)); score += pts
         signals.append(f"💧 Liquidez ${liq/1000:.0f}K — cedo, a crescer (+{pts}pts) ⚠️")
@@ -610,26 +610,26 @@ if liq > 0:
         signals.append(f"💧 Liquidez ${liq/1000:.0f}K — alta, já comprado ({w['liq_bad']:.0f}pts)")
         active.append("liq_bad")
     else:
-        # Abaixo de $12K — muito arriscado
+        # Abaixo de $12K - muito arriscado
         score += int(w["liq_bad"])
         signals.append(f"💧 Liquidez ${liq/1000:.0f}K — muito baixa, risco alto ({w['liq_bad']:.0f}pts)")
         active.append("liq_bad")
 
-# ── RATIO VOL 1H / 24H ──────────────────────
+# -- RATIO VOL 1H / 24H ----------------------
 if vol_24h > 0 and vol_1h > 0:
     ratio = vol_1h / vol_24h
     if ratio >= 0.30:
-        # Volume muito alto — moeda a explodir agora
+        # Volume muito alto - moeda a explodir agora
         pts = int(w["vol_ratio_good"]) + 10; score += pts
         signals.append(f"📊 Vol1H/24H: {ratio*100:.0f}% — momentum explosivo (+{pts}pts)")
         active.append("vol_ratio_good"); active.append("volume_spike")
     elif ratio >= 0.15:
-        # Volume alto — bom sinal
+        # Volume alto - bom sinal
         pts = int(w["vol_ratio_good"]); score += pts
         signals.append(f"📊 Vol1H/24H: {ratio*100:.0f}% — momentum forte (+{pts}pts)")
         active.append("vol_ratio_good")
     elif ratio >= CONFIG["vol_ratio_min"]:
-        # Volume moderado — passa mas com menos pontos
+        # Volume moderado - passa mas com menos pontos
         pts = int(w["vol_ratio_good"]) // 2; score += pts
         signals.append(f"📊 Vol1H/24H: {ratio*100:.0f}% — momentum moderado (+{pts}pts)")
         active.append("vol_ratio_good")
@@ -639,11 +639,11 @@ if vol_24h > 0 and vol_1h > 0:
 return passed, score, signals, active
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🔢  MOTOR DE CONFIANÇA
+# MOTOR DE CONFIANA
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 def calculate_confidence(mint):
 d = token_data.get(mint)
@@ -662,14 +662,14 @@ volumes = list(d["volumes"])
 trades  = list(d["trades"])
 in_hot  = is_hot_window()
 
-# 1. Janela horária
+# 1. Janela horria
 if in_hot:
     pts = int(w["hot_window"]); score += pts
     signals.append(f"🕐 Janela 23h–03h (+{pts}pts)"); active.append("hot_window")
 else:
     signals.append("🕑 Fora da janela 23h–03h")
 
-# 2. Preço
+# 2. Preo
 ap = d.get("alert_price") or (prices[-1] if prices else 0)
 if ap > 0:
     if ap < 0.00030:
@@ -684,13 +684,13 @@ if ap > 0:
         signals.append(f"🟠 Preço alto ${ap:.7f} na janela (neutro)")
 
 # 3. Market Cap + Liquidity + Vol ratio (NOVOS FILTROS v7)
-# ── FILTRO DE MOMENTUM — 3 janelas (5m + 1h + 6h) ────────
+# -- FILTRO DE MOMENTUM - 3 janelas (5m + 1h + 6h) --------
 p5m  = d.get("p5m",  0)
 p1h  = d.get("p1h",  0)
 p6h  = d.get("p6h",  0)
 p24h = d.get("p24h", 0)
 
-# BLOQUEIO 1 — caindo em 5m E fraca em 1h = sem momentum
+# BLOQUEIO 1 - caindo em 5m E fraca em 1h = sem momentum
 if p5m < -5 and p1h < 2:
     return {
         "score": 0,
@@ -699,7 +699,7 @@ if p5m < -5 and p1h < 2:
         "active_signals": [], "blocked": True
     }
 
-# BLOQUEIO 2 — estagnada: 1h quase plana E 5m negativo ou zero
+# BLOQUEIO 2 - estagnada: 1h quase plana E 5m negativo ou zero
 if -5 <= p1h <= 5 and p5m <= 0:
     return {
         "score": 0,
@@ -708,7 +708,7 @@ if -5 <= p1h <= 5 and p5m <= 0:
         "active_signals": [], "blocked": True
     }
 
-# BLOQUEIO 3 — ja bateu o topo: subiu muito em 6h mas agora fraca em 1h
+# BLOQUEIO 3 - ja bateu o topo: subiu muito em 6h mas agora fraca em 1h
 # Ex: +300% em 6h mas so +3% em 1h = pump ja aconteceu
 if p6h >= 200 and p1h < 10:
     return {
@@ -718,7 +718,7 @@ if p6h >= 200 and p1h < 10:
         "active_signals": [], "blocked": True
     }
 
-# BLOQUEIO 4 — pump muito antigo: subiu muito em 24h mas 6h e 1h fracas
+# BLOQUEIO 4 - pump muito antigo: subiu muito em 24h mas 6h e 1h fracas
 if p24h >= 300 and p6h < 20 and p1h < 5:
     return {
         "score": 0,
@@ -736,7 +736,7 @@ score += mcap_score
 signals.extend(mcap_signals)
 active.extend(mcap_active)
 
-# 4. Pressão de compra
+# 4. Presso de compra
 total = d["buy_count"] + d["sell_count"]
 if total > 0:
     br = d["buy_count"] / total
@@ -767,22 +767,22 @@ if len(rec) >= 2 and len(old) >= 1:
             score += int(w["momentum_pen"])
             signals.append(f"📉 Momentum a cair ({w['momentum_pen']:.0f}pts)"); active.append("momentum_pen")
 
-# 7. Tendência de preço — bloqueia moedas em queda
+# 7. Tendncia de preo - bloqueia moedas em queda
 if len(prices) >= 2 and prices[0] > 0:
-    # Tendência geral desde que o bot começou a ver a moeda
+    # Tendncia geral desde que o bot comeou a ver a moeda
     trend_overall = (prices[-1] - prices[0]) / prices[0]
 else:
     trend_overall = 0
 
 if len(prices) >= 4 and prices[-4] > 0:
-    # Tendência recente (últimas 4 observações)
+    # Tendncia recente (ltimas 4 observaes)
     trend_recent = (prices[-1] - prices[-4]) / prices[-4]
 else:
     trend_recent = 0
 
-# BLOQUEIO DURO — moeda em queda clara não passa
+# BLOQUEIO DURO - moeda em queda clara no passa
 if trend_recent <= -0.10 and trend_overall <= -0.05:
-    # Caindo -10% recentemente E tendência geral negativa = bloqueia
+    # Caindo -10% recentemente E tendncia geral negativa = bloqueia
     return {
         "score": 0,
         "signals": [f"🚫 Bloqueado — preço em queda ({trend_recent*100:.1f}% recente, {trend_overall*100:.1f}% geral)"],
@@ -792,15 +792,15 @@ if trend_recent <= -0.10 and trend_overall <= -0.05:
         "blocked": True
     }
 elif trend_recent >= 0.05:
-    # Subida recente — bom sinal
+    # Subida recente - bom sinal
     pts = min(int(w["price_rise"]), int(trend_recent*150)); score += pts
     signals.append(f"🚀 Preço +{trend_recent*100:.1f}% (+{pts}pts)"); active.append("price_rise")
 elif trend_recent <= -0.05:
-    # Queda leve — penaliza mas não bloqueia
+    # Queda leve - penaliza mas no bloqueia
     score += int(w["price_fall_pen"])
     signals.append(f"⚠️ Preço {trend_recent*100:.1f}% ({w['price_fall_pen']:.0f}pts)"); active.append("price_fall_pen")
 
-# 8. Frequência de trades
+# 8. Frequncia de trades
 rt = [t["time"] for t in trades[-10:]]
 if len(rt) >= 2:
     dur = rt[-1] - rt[0]
@@ -810,9 +810,9 @@ if len(rt) >= 2:
             pts = min(int(w["trade_freq"]), int(tps*8)); score += pts
             signals.append(f"⚡ Freq: {tps:.2f}/s (+{pts}pts)"); active.append("trade_freq")
 
-# 8a-extra. Padrão histórico — baseado em backtesting
+# 8a-extra. Padro histrico - baseado em backtesting
 if len(pattern_history) >= 20:
-    # Encontra padrões similares no histórico
+    # Encontra padres similares no histrico
     similar = [p for p in pattern_history if (
         abs(p.get("mcap",0) - d.get("market_cap",0)) < 100000 and
         abs(p.get("vol_ratio",0) - (d.get("vol_1h",0)/max(d.get("vol_24h",1),1))) < 0.10 and
@@ -870,9 +870,9 @@ if h_total >= 10:
         signals.append(f"🕐 Hora {current_hour}h historicamente fraca ({h_rate*100:.0f}% acerto) ({w.get('cold_hour',-10):.0f}pts)")
         active.append("cold_hour")
 
-# ── NOVAS MELHORIAS v11 ──────────────────────────────────
+# -- NOVAS MELHORIAS v11 ----------------------------------
 
-# A. ANTI-FOMO — se a moeda ja subiu muito, o bot chegou tarde
+# A. ANTI-FOMO - se a moeda ja subiu muito, o bot chegou tarde
 if len(prices) >= 2 and prices[0] > 0:
     already_up = (prices[-1] - prices[0]) / prices[0]
     if already_up >= 1.5:  # ja subiu +150% antes do bot a detetar
@@ -882,7 +882,7 @@ if len(prices) >= 2 and prices[0] > 0:
     elif already_up >= 0.8:
         signals.append(f"⚠️ Ja subiu +{already_up*100:.0f}% — verifica se ainda tem espaco")
 
-# B. MOMENTUM DE HOLDERS — velocidade de novos holders
+# B. MOMENTUM DE HOLDERS - velocidade de novos holders
 ht = holder_timeline.get(mint, [])
 if len(ht) >= 2:
     t1, h1 = ht[0]; t2, h2 = ht[-1]
@@ -897,7 +897,7 @@ if len(ht) >= 2:
         signals.append(f"📈 Holders: +{holders_per_min:.1f}/min — a crescer (+{pts}pts)")
         active.append("holder_momentum")
 
-# C. COPY-CAT — tema de moeda que explodiu recentemente
+# C. COPY-CAT - tema de moeda que explodiu recentemente
 name_lower = d.get("name", "").lower()
 for rocket in recent_rockets[-10:]:  # so verifica os 10 mais recentes
     if time.time() - rocket["time"] > 7200: continue  # so conta se foi nas ultimas 2h
@@ -909,7 +909,7 @@ for rocket in recent_rockets[-10:]:  # so verifica os 10 mais recentes
         active.append("copycat_bonus")
         break
 
-# D. CONFIANCA ACUMULADA — bonus quando muitos sinais positivos concordam
+# D. CONFIANCA ACUMULADA - bonus quando muitos sinais positivos concordam
 positive_signals = [s for s in active if not s.endswith("_pen") and s not in
                     ("anti_fomo","pattern_weak","holders_bad","dev_sold",
                      "concentration_bad","momentum_pen","price_high_pen","cold_hour","stop_loss_risk")]
@@ -922,13 +922,13 @@ elif len(positive_signals) >= 6:
     signals.append(f"✅ Consenso: {len(positive_signals)} sinais positivos (+{pts}pts)")
     active.append("signal_consensus")
 
-# F. BAD DEV — carteira do dev já fez rugpull antes
+# F. BAD DEV - carteira do dev j fez rugpull antes
 dev_wallet = token_dev_wallet.get(mint, "")
 if dev_wallet and dev_wallet in BAD_DEV_WALLETS:
     score += int(w.get("bad_dev", -60))
     signals.append(f"🚨 Dev já fez rugpull antes! ({w.get('bad_dev',-60):.0f}pts)")
     active.append("bad_dev")
-    # Se dev é conhecido por rugpull, bloqueia diretamente
+    # Se dev  conhecido por rugpull, bloqueia diretamente
     return {
         "score": 0,
         "signals": [f"🚫 BLOQUEADO — dev desta carteira já fez rugpull ({dev_wallet[:16]}...)"],
@@ -938,12 +938,12 @@ if dev_wallet and dev_wallet in BAD_DEV_WALLETS:
         "blocked": True
     }
 
-# G. BUNDLE BUY DETECTION — primeiras compras muito parecidas = bot
+# G. BUNDLE BUY DETECTION - primeiras compras muito parecidas = bot
 early = token_early_buys.get(mint, [])
 if len(early) >= 6:
     avg_buy = sum(early) / len(early)
     if avg_buy > 0:
-        # Coeficiente de variação — quanto mais baixo mais uniformes são as compras
+        # Coeficiente de variao - quanto mais baixo mais uniformes so as compras
         variance  = sum((x - avg_buy)**2 for x in early) / len(early)
         std_dev   = variance ** 0.5
         cv        = std_dev / avg_buy  # 0 = todas iguais, 1+ = muito variadas
@@ -952,19 +952,19 @@ if len(early) >= 6:
             signals.append(f"🤖 Bundle buy detetado — {len(early)} compras idênticas (cv={cv:.2f}) ({w.get('bundle_buy',-40):.0f}pts)")
             active.append("bundle_buy")
 
-# H. LIQUIDEZ vs PREÇO DIVERGÊNCIA — preço sobe mas liquidez não acompanha
+# H. LIQUIDEZ vs PREO DIVERGNCIA - preo sobe mas liquidez no acompanha
 if len(prices) >= 3:
     price_change = (prices[-1] - prices[0]) / prices[0] if prices[0] > 0 else 0
     liq_now      = d.get("liquidity", 0)
     liq_start    = d.get("liq_at_start", liq_now)
     liq_change   = (liq_now - liq_start) / liq_start if liq_start > 0 else 0
-    # Preço subiu muito mas liquidez ficou igual ou caiu = red flag
+    # Preo subiu muito mas liquidez ficou igual ou caiu = red flag
     if price_change >= 0.30 and liq_change < 0.05:
         score += int(w.get("liq_price_diverge", -30))
         signals.append(f"⚠️ Preço +{price_change*100:.0f}% mas liquidez não acompanha ({w.get('liq_price_diverge',-30):.0f}pts)")
         active.append("liq_price_diverge")
 
-# E. STOP-LOSS RISK — proximo do pior resultado historico deste padrao
+# E. STOP-LOSS RISK - proximo do pior resultado historico deste padrao
 if len(active) >= 2:
     pat_key_now = "|".join(sorted(active[:5]))
     pat_now     = pattern_history_dict.get(pat_key_now, {}) if 'pattern_history_dict' in dir() else {}
@@ -979,18 +979,18 @@ if len(active) >= 2:
                 signals.append(f"⚠️ Risco: padrão similar caiu ate -{abs(worst)*100:.0f}% no pior caso ({w.get('stop_loss_risk',-20):.0f}pts)")
                 active.append("stop_loss_risk")
 
-# 8c. Helius — holders, dev, concentração
+# 8c. Helius - holders, dev, concentrao
 holders   = d.get("holders", 0)
 top10_pct = d.get("top10_pct", 0)
 dev_holds = d.get("dev_still_holds", None)
 
-# Dev suspeito (muitas transações = serial creator)
+# Dev suspeito (muitas transaes = serial creator)
 if d.get("dev_suspicious"):
     score -= 25
     signals.append("⚠️ Dev suspeito — histórico de muitas transações (-25pts)")
 
 if holders > 0:
-    # Bloqueia moedas com pouquissimos holders — rugpull quase certo
+    # Bloqueia moedas com pouquissimos holders - rugpull quase certo
     if holders < 10:
         return {
             "score": 0,
@@ -1032,11 +1032,11 @@ return {"score": score, "signals": signals, "verdict": v, "category": cat,
         "active_signals": active, "blocked": False}
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🌐  DEXSCREENER — buscar market cap, liq, vol
+# DEXSCREENER - buscar market cap, liq, vol
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 async def fetch_dexscreener(mint):
 “”“Busca dados de Market Cap, Liquidity e Volume do DexScreener.”””
@@ -1050,7 +1050,7 @@ if r.status != 200: return None
 data  = await r.json()
 pairs = data.get(“pairs”) or []
 if not pairs: return None
-p = pairs[0]  # primeiro par (mais líquido)
+p = pairs[0]  # primeiro par (mais lquido)
 chg = p.get(“priceChange”) or {}
 return {
 “price”:      float(p.get(“priceUsd”) or 0),
@@ -1087,11 +1087,11 @@ d[“p1h”]  = data.get(“p1h”,  0)
 d[“p6h”]  = data.get(“p6h”,  0)
 d[“p24h”] = data.get(“p24h”, 0)
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🔬  HELIUS — holders, dev wallet, concentração
+# HELIUS - holders, dev wallet, concentrao
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 async def fetch_helius_data(mint):
 “””
@@ -1123,16 +1123,16 @@ if not accounts: return None
 
 ```
             total_holders = len(accounts)
-            # Calcula concentração dos top 10
+            # Calcula concentrao dos top 10
             amounts  = sorted([float(a.get("amount", 0)) for a in accounts], reverse=True)
             total_supply = sum(amounts) or 1
             top10_pct    = sum(amounts[:10]) / total_supply * 100
 
             # Verifica se o dev (primeiro criador) ainda tem tokens
-            # O dev normalmente é o maior holder inicial
+            # O dev normalmente  o maior holder inicial
             dev_amount = amounts[0] if amounts else 0
             dev_pct    = dev_amount / total_supply * 100
-            # Se o maior holder tem < 1% provavelmente o dev já vendeu
+            # Se o maior holder tem < 1% provavelmente o dev j vendeu
             dev_still_holds = dev_pct >= 2.0
 
             return {
@@ -1164,7 +1164,7 @@ async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as 
 if r.status != 200: return 0
 data = await r.json()
 sigs = data.get(“result”, [])
-# Estimativa: muitas transações recentes = dev ativo a criar tokens
+# Estimativa: muitas transaes recentes = dev ativo a criar tokens
 return len(sigs)
 except: return 0
 
@@ -1180,7 +1180,7 @@ d[“dev_still_holds”] = data[“dev_still_holds”]
 d[“dev_pct”]         = data[“dev_pct”]
 
 ```
-# Verifica histórico do dev
+# Verifica histrico do dev
 dev_wallet = token_dev_wallet.get(mint, "")
 if dev_wallet:
     dev_tx_count = await fetch_dev_token_count(dev_wallet)
@@ -1192,11 +1192,11 @@ if dev_wallet:
 print(f"[Helius] {d.get('name','?')} — {data['holders']} holders | top10: {data['top10_pct']:.0f}% | dev: {'✅' if data['dev_still_holds'] else '❌ vendeu'}")
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🧠  APRENDIZAGEM (2h depois)
+# APRENDIZAGEM (2h depois)
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 async def check_and_learn(mint, check_data):
 “””
@@ -1213,12 +1213,12 @@ alert_vol_rat  = check_data.get(“alert_vol_ratio”, 0)
 alert_in_hot   = check_data.get(“alert_in_hot”, False)
 
 ```
-# ── 1. BUSCA PREÇO ATUAL ─────────────────────────────────
+# -- 1. BUSCA PREO ATUAL ---------------------------------
 current_price = None
 dex = await fetch_dexscreener(mint)
 if dex and dex["price"] > 0:
     current_price = dex["price"]
-    # Atualiza métricas atuais para análise
+    # Atualiza mtricas atuais para anlise
     current_mcap    = dex.get("market_cap", 0)
     current_liq     = dex.get("liquidity", 0)
 elif mint in token_data:
@@ -1229,19 +1229,19 @@ elif mint in token_data:
 if not current_price or alert_price <= 0:
     print(f"[Aprendizagem] ⚠️ {name} — sem preço para verificar"); return
 
-# ── 2. CALCULA RESULTADO ─────────────────────────────────
+# -- 2. CALCULA RESULTADO ---------------------------------
 change     = (current_price - alert_price) / alert_price
 elapsed_h  = (time.time() - check_data["alert_time"]) / 3600
 
-# ESTAGNAÇÃO — se passou muito tempo e não subiu 50%, conta como falha
-# Moeda "morta" que ficou entre -20% e +20% é tão má como uma queda
+# ESTAGNAO - se passou muito tempo e no subiu 50%, conta como falha
+# Moeda "morta" que ficou entre -20% e +20%  to m como uma queda
 stagnant = (abs(change) < 0.20 and elapsed_h >= 1.5)
 success  = change >= CONFIG["success_threshold"] and not stagnant
 result_str = f"+{change*100:.1f}%" if change >= 0 else f"{change*100:.1f}%"
 if stagnant and not success:
     result_str += " (ESTAGNADA)"
 
-# ── 3. DIAGNÓSTICO — porquê falhou? ─────────────────────
+# -- 3. DIAGNSTICO - porqu falhou? ---------------------
 diagnosis = []
 if not success:
     # Analisa cada fator para perceber o que correu mal
@@ -1253,7 +1253,7 @@ if not success:
         diagnosis.append(("vol_ratio_good", "Vol1H/24H baixo → momentum fraco"))
     if not alert_in_hot:
         diagnosis.append(("hot_window", "Fora da janela 23h–03h"))
-    # Diagnóstico Helius
+    # Diagnstico Helius
     alert_holders  = check_data.get("alert_holders", 0)
     alert_top10    = check_data.get("alert_top10_pct", 0)
     alert_dev      = check_data.get("alert_dev_holds", None)
@@ -1267,24 +1267,24 @@ if not success:
         diagnosis.append(("momentum", "Moeda estagnada — não subiu após 2h"))
         diagnosis.append(("vol_ratio_good", "Volume não foi suficiente para mover o preço"))
     elif change < -0.1:
-        # Caiu mesmo → todos os sinais ativos são suspeitos
+        # Caiu mesmo -> todos os sinais ativos so suspeitos
         for sig in active:
             if not any(sig == d[0] for d in diagnosis):
                 diagnosis.append((sig, "Sinal não preveniu a queda"))
 
-# ── 4. AJUSTA PESOS ─────────────────────────────────────
+# -- 4. AJUSTA PESOS -------------------------------------
 old_w   = dict(WEIGHTS)
-# Penaliza os sinais do diagnóstico com força extra
+# Penaliza os sinais do diagnstico com fora extra
 diag_sigs = [d[0] for d in diagnosis] if not success else []
 all_sigs  = list(set(active + diag_sigs))
 
-# Foco em explosões rápidas — aprende mais com ganhos nas primeiras horas
+# Foco em exploses rpidas - aprende mais com ganhos nas primeiras horas
 hours_since = (time.time() - check_data.get("alert_time", time.time())) / 3600
 if hours_since <= 2 and change >= 0.50:
-    change_w = change * 1.5   # explosão nas primeiras 2h — aprende agressivamente
+    change_w = change * 1.5   # exploso nas primeiras 2h - aprende agressivamente
     print(f"[Aprendizagem] ⚡ Explosão rápida ({hours_since:.1f}h) — peso x1.5")
 elif hours_since <= 6 and change >= 1.0:
-    change_w = change * 1.2   # explosão até 6h — ainda muito bom
+    change_w = change * 1.2   # exploso at 6h - ainda muito bom
 else:
     change_w = change
 
@@ -1292,7 +1292,7 @@ WEIGHTS   = adjust_weights(WEIGHTS, all_sigs, success, change_w)
 save_weights(WEIGHTS)
 learns_done += 1
 
-# ── 4b. GUARDA PADRÃO NO HISTÓRICO (backtesting futuro) ──
+# -- 4b. GUARDA PADRO NO HISTRICO (backtesting futuro) --
 pattern_entry = {
     "timestamp":  time.time(),
     "name":       name,
@@ -1310,7 +1310,7 @@ pattern_entry = {
 pattern_history.append(pattern_entry)
 save_pattern_history()
 
-# ── 4b-hora. ATUALIZA STATS POR HORA ─────────────────────
+# -- 4b-hora. ATUALIZA STATS POR HORA ---------------------
 alert_hour = datetime.fromtimestamp(check_data["alert_time"]).hour
 if alert_hour not in hour_stats:
     hour_stats[alert_hour] = {"wins": 0, "total": 0, "avg_gain": 0.0}
@@ -1320,7 +1320,7 @@ if success: hs["wins"] += 1
 hs["avg_gain"] = (hs["avg_gain"] * (hs["total"]-1) + change*100) / hs["total"]
 save_hour_stats()
 
-# ── 4c. ATUALIZA TEMAS ────────────────────────────────────
+# -- 4c. ATUALIZA TEMAS ------------------------------------
 theme = detect_theme(name)
 if theme:
     if theme not in successful_themes:
@@ -1330,10 +1330,10 @@ if theme:
         successful_themes[theme]["count_success"] += 1
         successful_themes[theme]["total_gain"]    += change
 
-# ── 5. LOG ──────────────────────────────────────────────
-# ── Aprende carteiras de devs que fizeram rugpull ──────────
+# -- 5. LOG ----------------------------------------------
+# -- Aprende carteiras de devs que fizeram rugpull ----------
 if not success and change <= -0.40:
-    # Queda de -40%+ = provável rugpull — guarda o dev
+    # Queda de -40%+ = provvel rugpull - guarda o dev
     dev_wallet = token_dev_wallet.get(mint, "")
     if dev_wallet and len(dev_wallet) > 30:
         if dev_wallet not in BAD_DEV_WALLETS:
@@ -1341,7 +1341,7 @@ if not success and change <= -0.40:
             save_bad_devs()
             print(f"[Rugpull] ⚠️ Dev adicionado à blacklist: {dev_wallet[:16]}... ({name} caiu {change*100:.0f}%)")
 
-# ── Guarda rockets para detetar copy-cats ──────────────────
+# -- Guarda rockets para detetar copy-cats ------------------
 if success and change >= 0.80:
     theme = detect_theme(name)
     recent_rockets.append({
@@ -1357,7 +1357,7 @@ if success and change >= 0.80:
 icon = "✅" if success else "❌"
 _sep = '═'*55
 print(f"\n{_sep}")
-print(f"  {icon} [Aprendizagem #{learns_done}] {name} — {result_str}")
+print(f"  {icon} [Aprendizagem #{learns_done}] {name} - {result_str}")
 print(f"  Preço alerta: ${alert_price:.8f} → Agora: ${current_price:.8f}")
 if diagnosis:
     print(f"  🔍 Diagnóstico:")
@@ -1368,7 +1368,7 @@ if changed:
     print(f"  ⚖️  Pesos ajustados: {changed}")
 print(f"{_sep}\n")
 
-# ── 6. LOG CSV ───────────────────────────────────────────
+# -- 6. LOG CSV -------------------------------------------
 with open(CONFIG["log_file"], "a", newline="") as f:
     import csv as _csv
     w = _csv.writer(f)
@@ -1379,11 +1379,11 @@ with open(CONFIG["log_file"], "a", newline="") as f:
                 str([d[1] for d in diagnosis])])
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🔔  DISCORD — ALERTA (formato inspirado no GEM HUNTERS)
+# DISCORD - ALERTA (formato inspirado no GEM HUNTERS)
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 async def send_discord_alert(mint, analysis, price, source=“pump.fun”):
 global alerts_sent
@@ -1407,7 +1407,7 @@ mcap_str = f"${mcap/1000:.0f}K" if mcap else "N/A"
 liq_str  = f"${liq/1000:.0f}K" if liq else "N/A"
 dex_url  = f"https://dexscreener.com/solana/{mint}"
 
-# Preço alvo baseado em padrão histórico
+# Preo alvo baseado em padro histrico
 target_line = ""
 win_rate    = d.get("pattern_win_rate", 0)
 avg_gain    = d.get("pattern_avg_gain", 0)
@@ -1426,7 +1426,7 @@ embed = {
     ),
     "color": color,
     "fields": [],
-    "footer":    {"text": f"Trading Bot {BOT_VERSION} • Alerta #{alerts_sent+1} • Fonte: {source}"},
+    "footer":    {"text": f"Trading Bot {BOT_VERSION} • Alerta #{alerts_sent+1}  Fonte: {source}"},
     "timestamp": datetime.now(timezone.utc).isoformat()
 }
 
@@ -1436,16 +1436,16 @@ try:
                          timeout=aiohttp.ClientTimeout(total=5))
         if r.status in (200, 204):
             alerts_sent += 1
-            print(f"[Discord] ✅ #{alerts_sent} — {d.get('name','?')} score:{analysis['score']}% mcap:${mcap/1000:.0f}K via {source}")
+            print(f"[Discord] ✅ #{alerts_sent} - {d.get('name','?')} score:{analysis['score']}% mcap:${mcap/1000:.0f}K via {source}")
 except Exception as e:
     print(f"[Discord] ❌ {e}")
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 📊  DISCORD — ATUALIZAÇÃO 20 MINUTOS
+# DISCORD - ATUALIZAO 20 MINUTOS
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 def calc_sell_probability(mint, dex, pct):
 “””
@@ -1455,7 +1455,7 @@ Baseado em sinais técnicos reais — não é garantia, é orientação.
 d = token_data.get(mint, {})
 warnings  = []
 positives = []
-risk_score = 0  # quanto maior, maior risco de correção
+risk_score = 0  # quanto maior, maior risco de correo
 
 ```
 # 1. Volume a cair?
@@ -1496,7 +1496,7 @@ elif d.get("dev_still_holds") is True:
     risk_score -= 10
     positives.append("✅ Dev ainda tem tokens")
 
-# 4. Concentração de holders
+# 4. Concentrao de holders
 top10 = d.get("top10_pct", 0)
 if top10 > 50:
     risk_score += 25
@@ -1505,7 +1505,7 @@ elif top10 > 0 and top10 <= 30:
     risk_score -= 10
     positives.append(f"✅ Distribuição saudável ({top10:.0f}%)")
 
-# 5. Já subiu muito? Quanto mais subiu, maior risco de correção
+# 5. J subiu muito? Quanto mais subiu, maior risco de correo
 if pct >= 200:
     risk_score += 30
     warnings.append("⚠️ Já subiu muito (+200%) — possível correção")
@@ -1515,7 +1515,7 @@ elif pct >= 100:
 elif pct >= 50:
     risk_score += 5
 
-# 6. DexScreener — liquidez atual vs alerta
+# 6. DexScreener - liquidez atual vs alerta
 if dex:
     curr_liq = dex.get("liquidity", 0)
     if curr_liq > 0 and curr_liq < 15000:
@@ -1632,11 +1632,11 @@ except Exception as e:
     print(f"[Movimento] ❌ {e}")
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 💾  LOG / TERMINAL
+# LOG / TERMINAL
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 def log_alert(mint, analysis, price, source):
 exists = os.path.exists(CONFIG[“log_file”])
@@ -1672,11 +1672,11 @@ print(f”  CA: {mint}”)
 print(f”  Alertas: {alerts_sent} | Aprendizagens: {learns_done}”)
 print(“═”*60)
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🔄  PROCESSAR TRADE
+# PROCESSAR TRADE
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 async def process_trade(msg, source=“pump.fun”):
 global tokens_seen
@@ -1684,11 +1684,11 @@ mint = msg.get(“mint”) or msg.get(“token”)
 if not mint: return
 
 ```
-# ── BLACKLIST — moeda conhecida/já explodiu → ignora sempre ──
+# -- BLACKLIST - moeda conhecida/j explodiu -> ignora sempre --
 if mint in BLACKLIST:
     return
 
-# ── NUNCA REPETE — se já foi alertado, ignora ──
+# -- NUNCA REPETE - se j foi alertado, ignora --
 if mint in alerted_tokens: return
 
 is_new = mint not in token_data
@@ -1698,9 +1698,9 @@ d["source"] = source
 if is_new:
     tokens_seen += 1
     print(f"  [novo #{tokens_seen}] {msg.get('name','?')} via {source}")
-    # Busca dados do DexScreener para ter mcap/liq/vol desde o início
+    # Busca dados do DexScreener para ter mcap/liq/vol desde o incio
     asyncio.create_task(enrich_token_from_dex(mint))
-    # Busca dados Helius para holders/dev/concentração
+    # Busca dados Helius para holders/dev/concentrao
     asyncio.create_task(enrich_token_helius(mint))
 
 if "name"   in msg: d["name"]   = msg["name"]
@@ -1742,7 +1742,7 @@ if sol_amount > 0 and token_amt > 0:
     est = sol_amount / token_amt; d["prices"].append(est)
     if est > d["peak_price"]: d["peak_price"] = est
 
-# Guarda liquidez inicial para detetar divergência
+# Guarda liquidez inicial para detetar divergncia
 liq_current = d.get("liquidity", 0)
 if liq_current > 0 and d.get("liq_at_start", 0) == 0:
     d["liq_at_start"] = liq_current
@@ -1755,13 +1755,13 @@ now      = time.time()
 cat      = analysis.get("category")
 price    = prices[-1] if prices else 0
 
-# ── GUARDA MOEDAS IGNORADAS para aprender com oportunidades perdidas ──
+# -- GUARDA MOEDAS IGNORADAS para aprender com oportunidades perdidas --
 hot_now_skip = is_hot_window()
 min_score_skip = CONFIG["min_confidence"] if hot_now_skip else CONFIG["min_confidence"] + 10
 if (cat not in CONFIG["min_category"] or
         analysis["score"] < min_score_skip or
         analysis.get("blocked", False)):
-    # Moeda não passou o filtro — guarda para verificar depois
+    # Moeda no passou o filtro - guarda para verificar depois
     if mint not in skipped_coins and mint not in alerted_tokens and len(skipped_coins) < SKIPPED_MAX:
         skipped_coins[mint] = {
             "price":      price,
@@ -1786,7 +1786,7 @@ qualifies = (cat in CONFIG["min_category"] and
              not analysis.get("blocked", False))
 
 if qualifies:
-    # ── ALERTA 24/7 — janela ativa ou não ──
+    # -- ALERTA 24/7 - janela ativa ou no --
     alerted_tokens.add(mint)
     save_alerted()
     print_alert(mint, analysis, price, source)
@@ -1815,18 +1815,18 @@ if qualifies:
         "learned_hours":       [],          # horas em que ja aprendeu
         "monitor_until":       now + CONFIG["monitor_for"],  # monitoriza 24h
         "consolidation_low":   None,       # preco mais baixo durante consolidacao
-        "consolidation_start": None,       # quando começou a consolidar
+        "consolidation_start": None,       # quando comeou a consolidar
         "reaccel_alerted":     False,      # ja avisou de re-aceleracao
         "last_vol_check":      now,        # ultimo check de volume
         "last_vol_value":      0,          # volume da ultima verificacao
     }
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🌐  WEBSOCKET — pump.fun
+# WEBSOCKET - pump.fun
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 # Variaveis globais de saude do WebSocket
 
@@ -1867,7 +1867,7 @@ while True:
             await ws.send(json.dumps({"method": "subscribeNewToken"}))
             await ws.send(json.dumps({"method": "subscribeTokenTrade"}))
 
-            # Avisa Discord quando reconecta (só se houve downtime real)
+            # Avisa Discord quando reconecta (s se houve downtime real)
             if ws_total_restarts > 1 and "COLA" not in DISCORD_WEBHOOK_URL:
                 downtime_s = int(time.time() - last_connect_ok) if last_connect_ok else 0
                 try:
@@ -1893,7 +1893,7 @@ while True:
         downtime        = time.time() - last_connect_ok if last_connect_ok else 0
         reconnect_delay = min(reconnect_delay * 1.5, max_delay)
 
-        print(f"[pump.fun] Falha #{ws_fail_streak} — {type(e).__name__} — reconectando em {reconnect_delay:.0f}s...")
+        print(f"[pump.fun] Falha #{ws_fail_streak} - {type(e).__name__} - reconectando em {reconnect_delay:.0f}s...")
 
         now = time.time()
         if downtime > 120 and "COLA" not in DISCORD_WEBHOOK_URL and now - last_discord_alert > 600:
@@ -1995,9 +1995,9 @@ while True:
         await asyncio.sleep(reconnect_delay)
 ```
 
-# 🌐  POLLING — DexScreener (moedas trending)
+# POLLING - DexScreener (moedas trending)
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 async def _process_dex_pairs(pairs, source):
 “”“Processa lista de pares DexScreener — partilhado por todos os endpoints.”””
@@ -2081,11 +2081,11 @@ while True:
     await asyncio.sleep(10)
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# ⏱️  LOOPS PERIÓDICOS
+# LOOPS PERIDICOS
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 async def update_loop():
 “””
@@ -2102,7 +2102,7 @@ now = time.time()
     for mint, data in list(pending_checks.items()):
         alert_price = data["alert_price"]
 
-        # Busca preço atual
+        # Busca preo atual
         dex = await fetch_dexscreener(mint)
         if dex and dex["price"] > 0:
             current_price = dex["price"]
@@ -2117,24 +2117,24 @@ now = time.time()
         peak_pct = data.get("peak_pct", 0)
         silenced = data.get("silenced", False)
 
-        # Atualiza pico máximo
+        # Atualiza pico mximo
         if pct > peak_pct:
             data["peak_pct"] = pct
             peak_pct = pct
             if silenced:
-                # Superou o último máximo → volta a monitorizar
+                # Superou o ltimo mximo -> volta a monitorizar
                 data["silenced"] = False
                 silenced = False
                 print(f"[Monitor] {data.get('name','?')} superou máximo → volta a monitorizar")
 
-        # Milestones de SUBIDA — avisa uma vez cada
+        # Milestones de SUBIDA - avisa uma vez cada
         milestones_up = data.setdefault("milestones_up", set())
         for milestone in [25, 50, 100, 200]:
             if pct >= milestone and milestone not in milestones_up:
                 milestones_up.add(milestone)
                 await send_discord_movement(mint, data, current_price, pct, "up", milestone, dex)
 
-        # Milestones de DESCIDA — só se não estiver silenciado
+        # Milestones de DESCIDA - s se no estiver silenciado
         if not silenced:
             milestones_down = data.setdefault("milestones_down", set())
             for milestone in [20, 40]:
@@ -2145,30 +2145,30 @@ now = time.time()
                         data["silenced"] = True
                         print(f"[Monitor] {data.get('name','?')} -{milestone}% → silenciado até superar {peak_pct:.0f}%")
 
-        # ── DETEÇÃO DE RE-ACELERAÇÃO APÓS CONSOLIDAÇÃO ──
+        # -- DETEO DE RE-ACELERAO APS CONSOLIDAO --
         # Se a moeda parou e volta a acelerar, avisa
         if not data.get("reaccel_alerted"):
-            # Deteta consolidação — ficou entre peak-30% e peak+5% por algum tempo
-            if peak_pct >= 20:  # só monitoriza se já subiu pelo menos 20%
+            # Deteta consolidao - ficou entre peak-30% e peak+5% por algum tempo
+            if peak_pct >= 20:  # s monitoriza se j subiu pelo menos 20%
                 consolidation_zone_low  = peak_pct * 0.70   # 30% abaixo do pico
                 consolidation_zone_high = peak_pct * 1.05   # 5% acima do pico
 
                 if consolidation_zone_low <= pct <= consolidation_zone_high:
-                    # Está na zona de consolidação
+                    # Est na zona de consolidao
                     if data.get("consolidation_start") is None:
                         data["consolidation_start"] = now
                         data["consolidation_low"]   = pct
                     else:
-                        # Atualiza mínimo da consolidação
+                        # Atualiza mnimo da consolidao
                         if pct < data.get("consolidation_low", pct):
                             data["consolidation_low"] = pct
                 else:
-                    # Saiu da zona de consolidação
+                    # Saiu da zona de consolidao
                     consol_start = data.get("consolidation_start")
                     consol_duration = (now - consol_start) if consol_start else 0
 
                     if consol_start and consol_duration >= 1800:  # consolidou pelo menos 30 min
-                        # Verifica se está a re-acelerar para cima
+                        # Verifica se est a re-acelerar para cima
                         if pct > peak_pct * 1.10:  # superou o pico anterior em +10%
                             data["reaccel_alerted"]     = True
                             data["consolidation_start"] = None
@@ -2176,7 +2176,7 @@ now = time.time()
                             consol_mins = int(consol_duration / 60)
                             print(f"[Re-aceleração] 🚀 {name} — consolidou {consol_mins}min e voltou a subir! Pico anterior: +{peak_pct:.0f}% | Agora: +{pct:.0f}%")
 
-                            # Envia alerta especial de re-aceleração
+                            # Envia alerta especial de re-acelerao
                             if "COLA" not in DISCORD_WEBHOOK_URL:
                                 dex_url = f"https://dexscreener.com/solana/{mint}"
                                 reaccel_desc = (
@@ -2201,7 +2201,7 @@ now = time.time()
                                 except Exception as e:
                                     print(f"[Re-aceleração] Erro Discord: {e}")
                     else:
-                        # Resetar consolidação se saiu antes de 30 min
+                        # Resetar consolidao se saiu antes de 30 min
                         if pct < consolidation_zone_low:
                             data["consolidation_start"] = None
 
@@ -2231,7 +2231,7 @@ for mint in to_check:
     success       = change >= CONFIG["success_threshold"]
     result_str    = f"+{change*100:.1f}%" if change >= 0 else f"{change*100:.1f}%"
 
-    # Aprende — mesmo mecanismo que alertas normais
+    # Aprende - mesmo mecanismo que alertas normais
     old_w   = dict(WEIGHTS)
     WEIGHTS = adjust_weights(WEIGHTS, data["active"], success, change)
     learns_done += 1
@@ -2289,22 +2289,22 @@ for mint in to_check:
     change     = (current_price - skip_price) / skip_price
     result_str = f"+{change*100:.1f}%" if change >= 0 else f"{change*100:.1f}%"
 
-    # Só aprende se a moeda subiu muito (o bot perdeu uma oportunidade real)
-    missed_big = change >= 0.80   # subiu mais de 80% e o bot não alertou
-    missed_ok  = change >= 0.40   # subiu mais de 40% e o bot não alertou
+    # S aprende se a moeda subiu muito (o bot perdeu uma oportunidade real)
+    missed_big = change >= 0.80   # subiu mais de 80% e o bot no alertou
+    missed_ok  = change >= 0.40   # subiu mais de 40% e o bot no alertou
 
     if missed_big or missed_ok:
         factor     = 0.12 if missed_big else 0.07
         old_w      = dict(WEIGHTS)
-        # Reforça os sinais que ESTAVAM ATIVOS nessa moeda ignorada
-        # Esses sinais deviam ter dado alerta mas não deram
+        # Refora os sinais que ESTAVAM ATIVOS nessa moeda ignorada
+        # Esses sinais deviam ter dado alerta mas no deram
         for sig in data["active"]:
             if sig not in WEIGHTS: continue
             cur   = WEIGHTS[sig]
             delta = abs(cur) * factor
             WEIGHTS[sig] = max(5.0, min(40.0, cur + delta)) if cur > 0 else max(-40.0, min(-5.0, cur - delta))
 
-        # Se o score era perto do mínimo, baixa o mínimo ligeiramente
+        # Se o score era perto do mnimo, baixa o mnimo ligeiramente
         if data["score"] >= CONFIG["min_confidence"] - 10:
             CONFIG["min_confidence"] = max(45, CONFIG["min_confidence"] - 1)
 
@@ -2333,7 +2333,7 @@ while True:
         checkpoints    = chk.get("learn_checkpoints", [2,4,6,8,10,12,14,16,18,20,22,24])
         learned_hours  = chk.get("learned_hours", [])
 
-        # Verifica se passou algum checkpoint que ainda não aprendeu
+        # Verifica se passou algum checkpoint que ainda no aprendeu
         for cp in checkpoints:
             if hours_elapsed >= cp and cp not in learned_hours:
                 learned_hours.append(cp)
@@ -2342,7 +2342,7 @@ while True:
                 await check_and_learn(mint, chk)  # aprende mas nao remove
                 break  # um checkpoint de cada vez por ciclo
 
-    # Remove moedas que já passaram as 24h de monitorização
+    # Remove moedas que j passaram as 24h de monitorizao
     for mint in [m for m,chk in list(pending_checks.items())
                  if now >= chk.get("monitor_until", chk["check_at"])]:
         pending_checks.pop(mint, None)
@@ -2361,13 +2361,13 @@ while True:
               f"Alertas Discord: {alerts_sent} | Aprendizagens: {learns_done}\n")
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🚨  RUGPULL DETECTION
+# RUGPULL DETECTION
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-rugpull_warned = set()  # mints já avisados de rugpull
+rugpull_warned = set()  # mints j avisados de rugpull
 
 async def send_rugpull_alert(mint, name, liq_before, liq_now, price_drop_pct):
 “”“Mensagem urgente e diferente quando deteta rugpull.”””
@@ -2412,10 +2412,10 @@ if not dex: continue
         alert_price= data.get("alert_price", 0)
         prev_liq   = data.get("last_liq", curr_liq)
 
-        # Guarda liquidez atual para comparar na próxima iteração
+        # Guarda liquidez atual para comparar na prxima iterao
         data["last_liq"] = curr_liq
 
-        # Sinal 1: liquidez caiu >40% desde última verificação
+        # Sinal 1: liquidez caiu >40% desde ltima verificao
         if prev_liq > 0 and curr_liq > 0:
             liq_drop = (prev_liq - curr_liq) / prev_liq
             if liq_drop >= 0.40:
@@ -2424,7 +2424,7 @@ if not dex: continue
                 await send_rugpull_alert(mint, name, prev_liq, curr_liq, price_drop)
                 continue
 
-        # Sinal 2: preço caiu >35% muito rapidamente desde o alerta
+        # Sinal 2: preo caiu >35% muito rapidamente desde o alerta
         if alert_price > 0 and curr_price > 0:
             price_drop = (alert_price - curr_price) / alert_price
             if price_drop >= 0.35 and curr_liq < 10000:
@@ -2432,11 +2432,11 @@ if not dex: continue
                 await send_rugpull_alert(mint, name, prev_liq, curr_liq, price_drop*100)
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 📊  BACKTESTING — aprende com histórico
+# BACKTESTING - aprende com histrico
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 async def run_backtesting():
 “””
@@ -2460,10 +2460,10 @@ already_in   = {p.get("name","") for p in pattern_history}
 new_patterns = 0
 total_seen   = 0
 
-# ── FONTE 1: BASE HISTÓRICA HARDCODED ────────────────────
-# Moedas reais com resultados conhecidos — ancora os pesos iniciais
+# -- FONTE 1: BASE HISTRICA HARDCODED --------------------
+# Moedas reais com resultados conhecidos - ancora os pesos iniciais
 historical_base = [
-    # ROCKETS RAPIDOS (+50% em <1h) — foco em explosões curtas
+    # ROCKETS RAPIDOS (+50% em <1h) - foco em exploses curtas
     # result = multiplicador em 30-60min (ex: 2.0 = +100% em 1h)
     {"name":"Lupe",       "result":2.20, "mcap":96900,  "liq":16000, "vol_ratio":0.51,"hot":True, "signals":["hot_window","price_low","mcap_good","liq_growing","vol_ratio_good","volume_spike","momentum","buy_pressure","trade_freq"]},
     {"name":"KIMCHI",     "result":2.45, "mcap":187000, "liq":38000, "vol_ratio":0.22, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure"]},
@@ -2472,8 +2472,8 @@ historical_base = [
     {"name":"Dogs",       "result":2.10, "mcap":198000, "liq":36000, "vol_ratio":0.21, "hot":True, "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","buy_pressure"]},
     {"name":"MAYA",       "result":1.55, "mcap":145000, "liq":28000, "vol_ratio":0.26, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good"]},
     {"name":"BabyPippin", "result":1.80, "mcap":210000, "liq":41000, "vol_ratio":0.19, "hot":False,"signals":["price_low","mcap_good","liq_good","vol_ratio_good"]},
-    # EXPLOSOES RAPIDAS (+300% em <2h) — padrão que queremos encontrar
-    # vol_ratio alto + mcap baixo + janela ativa = explosão rápida
+    # EXPLOSOES RAPIDAS (+300% em <2h) - padro que queremos encontrar
+    # vol_ratio alto + mcap baixo + janela ativa = exploso rpida
     {"name":"MEGAPUP",    "result":4.10, "speed":"fast", "mcap":89000,  "liq":24000, "vol_ratio":0.38, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq"]},
     {"name":"SOLCAT",     "result":5.20, "speed":"fast", "mcap":112000, "liq":31000, "vol_ratio":0.42, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise"]},
     {"name":"MOONFROG",   "result":3.80, "speed":"fast", "mcap":134000, "liq":27000, "vol_ratio":0.35, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_good","vol_ratio_good","buy_pressure","volume_spike","momentum"]},
@@ -2483,17 +2483,17 @@ historical_base = [
     {"name":"ROCKETCAT",  "result":8.20, "speed":"fast", "mcap":76000,  "liq":18000, "vol_ratio":0.65, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_growing","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise","holder_momentum","hot_hour"]},
     {"name":"SOLBULL",    "result":7.50, "speed":"fast", "mcap":91000,  "liq":21000, "vol_ratio":0.58, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_growing","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise","holder_momentum"]},
     {"name":"MOONAPE",    "result":9.10, "speed":"fast", "mcap":68000,  "liq":15000, "vol_ratio":0.72, "hot":True, "signals":["hot_window","price_low","mcap_good","liq_growing","vol_ratio_good","buy_pressure","volume_spike","momentum","trade_freq","price_rise","holder_momentum","hot_hour","signal_consensus"]},
-    # MOEDAS LENTAS (sobem mas devagar — nao e o que queremos)
+    # MOEDAS LENTAS (sobem mas devagar - nao e o que queremos)
     {"name":"SLOWMOON",   "result":1.20, "speed":"slow", "mcap":280000, "liq":55000, "vol_ratio":0.12, "hot":False,"signals":["mcap_good","liq_good","vol_ratio_good"]},
     {"name":"LAZYPUMP",   "result":0.80, "speed":"slow", "mcap":320000, "liq":48000, "vol_ratio":0.10, "hot":False,"signals":["mcap_good","liq_good"]},
-    # FALHAS — ensinam o bot o que NÃO funciona
+    # FALHAS - ensinam o bot o que NO funciona
     {"name":"JUICESTNKS", "result":-0.35,"mcap":320000, "liq":52000, "vol_ratio":0.11, "hot":False,"signals":["mcap_good","liq_good"]},
     {"name":"NOBODY",     "result":-0.45,"mcap":280000, "liq":47000, "vol_ratio":0.09, "hot":False,"signals":["mcap_good","liq_good"]},
     {"name":"MOG",        "result":-0.28,"mcap":340000, "liq":58000, "vol_ratio":0.10, "hot":False,"signals":["mcap_good","liq_good"]},
     {"name":"DEADCOIN",   "result":-0.60,"mcap":450000, "liq":61000, "vol_ratio":0.06, "hot":False,"signals":["mcap_bad","liq_good"]},
     {"name":"RUGPULL1",   "result":-0.80,"mcap":180000, "liq":32000, "vol_ratio":0.08, "hot":True, "signals":["hot_window","mcap_good","liq_good","dev_sold","holders_bad"]},
     {"name":"RUGPULL2",   "result":-0.90,"mcap":220000, "liq":44000, "vol_ratio":0.07, "hot":True, "signals":["hot_window","mcap_good","liq_good","dev_sold","concentration_bad"]},
-    # MEDIOCRES (0-50%) — casos ambíguos
+    # MEDIOCRES (0-50%) - casos ambguos
     {"name":"MIDCOIN1",   "result":0.35, "mcap":260000, "liq":48000, "vol_ratio":0.13, "hot":False,"signals":["mcap_good","liq_good","vol_ratio_good"]},
     {"name":"MIDCOIN2",   "result":0.28, "mcap":190000, "liq":35000, "vol_ratio":0.16, "hot":True, "signals":["hot_window","mcap_good","liq_good","vol_ratio_good"]},
 ]
@@ -2502,7 +2502,7 @@ for coin in historical_base:
     if coin["name"] in already_in: continue
     success = coin["result"] >= 0.50
     change  = coin["result"]
-    # Explosões rápidas ensinam mais — multiplica o impacto na aprendizagem
+    # Exploses rpidas ensinam mais - multiplica o impacto na aprendizagem
     speed = coin.get("speed","normal")
     learn_change = change * 2.0 if speed == "fast" and change >= 2.0 else change
     WEIGHTS = adjust_weights(WEIGHTS, coin["signals"], success, learn_change)
@@ -2529,8 +2529,8 @@ for coin in historical_base:
 
 print(f"[Backtest] Base histórica: {new_patterns} moedas ({sum(1 for c in historical_base if c['result']>=0.5)} rockets, {sum(1 for c in historical_base if c['result']<0.5)} falhas)")
 
-# ── FONTES 2-4: DEXSCREENER ──────────────────────────────
-# Endpoints diferentes para máxima variedade
+# -- FONTES 2-4: DEXSCREENER ------------------------------
+# Endpoints diferentes para mxima variedade
 endpoints = [
     ("https://api.dexscreener.com/token-boosts/top/v1",       "Top Boosts",   300),
     ("https://api.dexscreener.com/token-boosts/latest/v1",    "Latest Boosts",200),
@@ -2557,7 +2557,7 @@ for url, label, limit in endpoints:
     else:
         continue
 
-    # Filtra só Solana
+    # Filtra s Solana
     sol_pairs = [p for p in pairs if
                  str(p.get("chainId","")).lower() == "solana" or
                  "pump" in str(p.get("pairAddress","")).lower() or
@@ -2592,21 +2592,21 @@ for url, label, limit in endpoints:
 
             vr = v1h / v24h
 
-            # FOCO EM EXPLOSÕES CURTAS — janelas 5min, 1h, 2h
-            change_5m = p5m  / 100   # variação 5 minutos
-            change_1h = p1h  / 100   # variação 1 hora
-            change_6h = p6h  / 100   # variação 6 horas (fallback)
+            # FOCO EM EXPLOSES CURTAS - janelas 5min, 1h, 2h
+            change_5m = p5m  / 100   # variao 5 minutos
+            change_1h = p1h  / 100   # variao 1 hora
+            change_6h = p6h  / 100   # variao 6 horas (fallback)
 
-            # Sucesso = explosão RÁPIDA
+            # Sucesso = exploso RPIDA
             # +30% em 5min = a explodir agora
-            # +80% em 1h = explosão rápida (o que queremos)
+            # +80% em 1h = exploso rpida (o que queremos)
             # +200% em 6h = bom mas lento
-            success_5m   = change_5m >= 0.30   # explosão imediata
-            success_1h   = change_1h >= 0.80   # explosão rápida — FOCO PRINCIPAL
-            success_6h   = change_6h >= 2.00   # explosão lenta — peso menor
+            success_5m   = change_5m >= 0.30   # exploso imediata
+            success_1h   = change_1h >= 0.80   # exploso rpida - FOCO PRINCIPAL
+            success_6h   = change_6h >= 2.00   # exploso lenta - peso menor
             success      = success_5m or success_1h or success_6h
 
-            # Resultado: prioriza janela mais curta disponível
+            # Resultado: prioriza janela mais curta disponvel
             if change_1h != 0:
                 change = change_1h
                 speed  = "fast" if change_1h >= 0.80 else "normal"
@@ -2614,11 +2614,11 @@ for url, label, limit in endpoints:
                 change = change_6h / 3  # normaliza 6h para equivalente ~2h
                 speed  = "slow"
 
-            # Explosões rápidas ensinam mais — multiplica o impacto
+            # Exploses rpidas ensinam mais - multiplica o impacto
             learn_change = change * 2.0 if speed == "fast" and change >= 0.80 else change
             total_seen += 1
 
-            # Constrói sinais simulados — foco em velocidade
+            # Constri sinais simulados - foco em velocidade
             sigs = []
             hot  = False
 
@@ -2626,20 +2626,20 @@ for url, label, limit in endpoints:
             if CONFIG["mcap_min"] <= mc <= CONFIG["mcap_max"]: sigs.append("mcap_good")
             elif mc > CONFIG["mcap_max"]: sigs.append("mcap_bad")
 
-            # Liquidez — zona cedo vs ideal
+            # Liquidez - zona cedo vs ideal
             if 25_000 <= lq <= CONFIG["liq_max"]:    sigs.append("liq_good")
             elif CONFIG["liq_min"] <= lq < 25_000:   sigs.append("liq_growing")
             elif lq > CONFIG["liq_max"]:              sigs.append("liq_bad")
 
-            # Volume ratio — CRÍTICO para explosões rápidas
+            # Volume ratio - CRTICO para exploses rpidas
             if vr >= 0.50:   sigs.extend(["vol_ratio_good","volume_spike","momentum","trade_freq"])  # volume muito alto
             elif vr >= 0.30: sigs.extend(["vol_ratio_good","volume_spike","momentum"])               # volume alto
             elif vr >= CONFIG["vol_ratio_min"]: sigs.append("vol_ratio_good")                       # ok
 
-            # Pressão de compra baseada em variação 5min e 1h
+            # Presso de compra baseada em variao 5min e 1h
             if p5m >= 10:  sigs.extend(["buy_pressure","price_rise"])   # a explodir agora
             elif p5m >= 3: sigs.append("buy_pressure")                  # a subir
-            if p1h >= 100: sigs.extend(["buy_pressure","price_rise","momentum"])  # já explodiu
+            if p1h >= 100: sigs.extend(["buy_pressure","price_rise","momentum"])  # j explodiu
             elif p1h >= 50: sigs.extend(["buy_pressure","price_rise"])
             elif p1h >= 20: sigs.append("buy_pressure")
             elif p1h < -10: sigs.append("momentum_pen")
@@ -2650,7 +2650,7 @@ for url, label, limit in endpoints:
 
             if not sigs: continue
 
-            # Aprende — explosões rápidas têm mais impacto nos pesos
+            # Aprende - exploses rpidas tm mais impacto nos pesos
             WEIGHTS = adjust_weights(WEIGHTS, sigs, success, learn_change)
             learns_done  += 1
             new_patterns += 1
@@ -2675,7 +2675,7 @@ for url, label, limit in endpoints:
                     successful_themes[theme]["count_success"] += 1
                     successful_themes[theme]["total_gain"]    += change
 
-            # Rockets para copy-cat — foco em explosões rápidas (+50%+ em 1h)
+            # Rockets para copy-cat - foco em exploses rpidas (+50%+ em 1h)
             if success_fast and change_1h >= 0.50:
                 recent_rockets.append({"name":name,"theme":theme or name.lower()[:4],"time":time.time(),"gain":change_1h*100})
             elif success_slow and change_6h >= 1.0:
@@ -2688,7 +2688,7 @@ for url, label, limit in endpoints:
     print(f"[Backtest] {label}: {batch_learned} moedas | {wins_batch} rockets | {batch_learned-wins_batch} falhas")
     await asyncio.sleep(1)  # pausa entre endpoints
 
-# ── GUARDA TUDO ──────────────────────────────────────────
+# -- GUARDA TUDO ------------------------------------------
 if new_patterns > 0:
     save_weights(WEIGHTS)
     save_pattern_history()
@@ -2706,13 +2706,13 @@ else:
     print(f"[Backtest] ✅ Ja tinha todos os padroes — {len(pattern_history)} no historico")
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🔧  MAINTENANCE
+# MAINTENANCE
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 LAST_BACKTEST = 0  # timestamp do ultimo backtesting periodico
 
@@ -2725,7 +2725,7 @@ now = time.time()
 ```
     # Verifica alertas 2h depois -> aprende
     for mint in [m for m,chk in list(pending_checks.items()) if now >= chk["check_at"]]:
-        pass  # removido — aprendizagem agora e feita por checkpoints no maintenance_loop
+        pass  # removido - aprendizagem agora e feita por checkpoints no maintenance_loop
 
     # Aprende com silent tracks (fora da janela) a cada 5 min
     if int(now) % 300 < 31:
@@ -2735,7 +2735,7 @@ now = time.time()
     if int(now) % 300 < 31:
         await learn_from_skipped()
 
-    # Backtesting periodico a cada 6 horas — dados sempre frescos
+    # Backtesting periodico a cada 6 horas - dados sempre frescos
     if now - LAST_BACKTEST >= 21600:
         LAST_BACKTEST = now
         print("[Backtest] 6h passadas — a correr backtesting com dados frescos...")
@@ -2748,7 +2748,7 @@ now = time.time()
                 holder_timeline.pop(mint, None)
         recent_rockets[:] = [r for r in recent_rockets if now - r["time"] < 14400]
 
-    # Guarda estado a cada 60s — recupera após crash
+    # Guarda estado a cada 60s - recupera aps crash
     if int(now) % 60 < 31:
         save_state()
 
@@ -2769,11 +2769,11 @@ now = time.time()
         await save_weights_to_railway(WEIGHTS)
 ```
 
-# ─────────────────────────────────────────────
+# ———————————————
 
-# 🚀  MAIN
+# MAIN
 
-# ─────────────────────────────────────────────
+# ———————————————
 
 async def main():
 print(”=” * 60)
@@ -2792,7 +2792,7 @@ print(f”  Log        : {CONFIG[‘log_file’]}”)
 print(”=” * 60 + “\n”)
 
 ```
-# ── DETEÇÃO DE CRASH — verifica se houve downtime ──────────
+# -- DETEO DE CRASH - verifica se houve downtime ----------
 last_state = load_last_state()
 if last_state:
     saved_at    = last_state.get("saved_at", 0)
@@ -2832,7 +2832,7 @@ if last_state:
 else:
     print("[Estado] Primeiro arranque — sem estado anterior")
 
-# ── MENSAGEM DE ARRANQUE NO DISCORD ─────────────────────
+# -- MENSAGEM DE ARRANQUE NO DISCORD ---------------------
 if "COLA" not in DISCORD_WEBHOOK_URL:
     startup_embed = {
         "title":       f"🤖 Bot Arrancou — {BOT_VERSION}",
