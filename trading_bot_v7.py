@@ -2691,7 +2691,7 @@ async def main():
     # -- MENSAGEM DE ARRANQUE NO DISCORD ---------------------
     if "COLA" not in DISCORD_WEBHOOK_URL:
         startup_embed = {
-            "title":       f"? Bot Arrancou - {BOT_VERSION}",
+            "title":       f"[BOT] Bot Arrancou - {BOT_VERSION}",
             "description": "Nova sessao iniciada! | MCap $100K-$500K | Liq $12K-$70K | Vol>5% | Janela: 23h-03h",
             "color": 0x00ff88,
             "footer": {"text": f"Trading Bot {BOT_VERSION}"},
