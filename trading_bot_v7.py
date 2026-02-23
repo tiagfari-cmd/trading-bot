@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 # “””
 
 # Bot de Sinais de Trading v9.0
