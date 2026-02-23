@@ -1833,52 +1833,6 @@ async def pumpfun_watchdog():
                 except Exception: pass
 
 
-async def helius_scanner():
-    """Helius WebSocket - alternativa mais estavel ao pump.fun."""
-    if "COLA" in HELIUS_API_KEY:
-        print("[Helius WS] Sem API key - scanner desativado")
-        return
-
-    url             = f"wss://atlas-mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-    reconnect_delay = 1
-
-    print("[Helius WS] Conectando como backup ao pump.fun...")
-    while True:
-        try:
-            async with websockets.connect(url, ping_interval=15, ping_timeout=10, open_timeout=20) as ws:
-                # Subscreve logs do programa pump.fun para apanhar novos tokens
-                await ws.send(json.dumps({
-                    "jsonrpc": "2.0", "id": 1,
-                    "method":  "logsSubscribe",
-                    "params":  [
-                        {"mentions": ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"]},
-                        {"commitment": "confirmed"}
-                    ]
-                }))
-                reconnect_delay = 1
-                print("[Helius WS] Conectado! Backup ao pump.fun ativo.")
-
-                async for raw in ws:
-                    try:
-                        data  = json.loads(raw)
-                        logs  = data.get("params", {}).get("result", {}).get("value", {}).get("logs", [])
-                        for log in logs:
-                            if "initialize" in log.lower():
-                                parts = log.split()
-                                for part in parts:
-                                    if len(part) >= 43 and part.endswith("pump"):
-                                        await process_trade({"mint": part, "name": "?", "symbol": "?"}, source="Helius")
-                                        break
-                    except Exception: pass
-
-        except Exception as e:
-            reconnect_delay = min(reconnect_delay * 1.5, 15)
-            print(f"[Helius WS] Falha - {type(e).__name__} - retentando em {reconnect_delay:.0f}s...")
-            await asyncio.sleep(reconnect_delay)
-
-#   POLLING - DexScreener (moedas trending)
-# ---------------------------------------------
-
 async def _process_dex_pairs(pairs, source):
     """Processa lista de pares DexScreener - partilhado por todos os endpoints."""
     count = 0
@@ -2711,7 +2665,6 @@ async def main():
     await asyncio.gather(
         pumpfun_scanner(),
         pumpfun_watchdog(),
-        helius_scanner(),
         dexscreener_scanner(),
         update_loop(),
         maintenance_loop(),
