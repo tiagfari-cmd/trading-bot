@@ -280,6 +280,7 @@ pending_checks = {}
 # Moedas que o bot viu mas ignorou (para aprender com oportunidades perdidas)
 skipped_coins  = {}   # mint -> {price, time, signals_at_skip, score}
 SKIPPED_MAX    = 200  # mximo de moedas ignoradas em memria
+
 SKIP_CHECK_AFTER  = 7200  # verifica 2h depois se subiu
 
 # -- ESTADO DO BOT - snapshot para recuperao aps crash -----
@@ -604,6 +605,7 @@ def calculate_confidence(mint):
 
     # 3. Market Cap + Liquidity + Vol ratio (NOVOS FILTROS v7)
     # -- FILTRO DE MOMENTUM - 3 janelas (5m + 1h + 6h) --------
+    # Bloqueia tokens permanentes (nao sao memecoins)
     p5m  = d.get("p5m",  0)
     p1h  = d.get("p1h",  0)
     p6h  = d.get("p6h",  0)
@@ -626,6 +628,15 @@ def calculate_confidence(mint):
             "verdict": "BLOQUEADO", "category": "FRACO",
             "active_signals": [], "blocked": True
         }
+
+    # BLOQUEIO 2b - moeda velha sem novo impulso: subiu muito em 24h mas agora fraca
+    # Exemplo: SOL +74% 24h mas apenas +8% 1h e +1% 5m = pump ja acabou
+    p5m_raw = d.get("p5m", 0)
+    if p24h > 50 and p1h < 15 and p5m_raw < 5:
+        return {"score": 0,
+                "signals": [f"Bloqueado - pump antigo sem novo impulso (24h:+{p24h:.0f}% mas 1h:{p1h:.1f}% 5m:{p5m_raw:.1f}%)"],
+                "verdict": "BLOQUEADO", "category": "FRACO",
+                "active_signals": [], "in_hot": False}
 
     # BLOQUEIO 3 - ja bateu o topo: subiu muito em 6h mas agora fraca em 1h
     # Ex: +300% em 6h mas so +3% em 1h = pump ja aconteceu
@@ -1323,7 +1334,7 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
     d       = token_data[mint]
     cat     = analysis.get("category", "?")
     color   = {"ROCKET": 0x00ff88, "BOM": 0xffd447}.get(cat, 0x888888)
-    icon    = {"ROCKET": "?", "BOM": "?"}.get(cat, "?")
+    icon    = {"ROCKET": "ROCKET", "BOM": "BOM"}.get(cat, cat)
     mcap    = d.get("market_cap", 0)
     liq     = d.get("liquidity", 0)
     vol_1h  = d.get("vol_1h", 0)
@@ -1332,7 +1343,7 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
 
 
 
-    janela   = "? janela ativa" if is_hot_window() else "? fora janela"
+    janela   = "janela ativa" if is_hot_window() else "fora da janela"
     mcap_str = f"${mcap/1000:.0f}K" if mcap else "N/A"
     liq_str  = f"${liq/1000:.0f}K" if liq else "N/A"
     dex_url  = f"https://dexscreener.com/solana/{mint}"
@@ -1344,13 +1355,13 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
     pat_count   = d.get("pattern_count", 0)
     if win_rate >= 0.60 and avg_gain > 0 and pat_count >= 5:
         target_price = price * (1 + avg_gain)
-        target_line  = f"\n**? Alvo historico:** `${target_price:.8f}` (+{avg_gain*100:.0f}%) - {win_rate*100:.0f}% acerto em {pat_count} casos"
+        target_line  = f"\nAlvo historico: `${target_price:.8f}` (+{avg_gain*100:.0f}%) - {win_rate*100:.0f}% acerto em {pat_count} casos"
 
     embed = {
         "title":       f"{icon} {cat} - {d.get('name','?')} | {d.get('symbol','?')}",
         "description": (
-            f"**?** `${price:.8f}`  **?** {analysis['score']}%  **?** {janela}\n"
-            f"**?** {mcap_str}  **?** {liq_str}  **?** {ratio}"
+            f"Preco: `${price:.8f}`  Score: {analysis['score']}%  Janela: {janela}\n"
+            f"MCap: {mcap_str}  Liq: {liq_str}  Var: {ratio}"
             f"{target_line}\n"
             f"\n[Chart - abre DexScreener e copia o CA aqui]({dex_url})"
         ),
