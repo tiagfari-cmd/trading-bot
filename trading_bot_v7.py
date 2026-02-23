@@ -1,31 +1,6 @@
-# -*- coding: utf-8 -*-
+# Trading Bot v11.5 - Auto-Scanner Solana
 
-# “””
-
-# Bot de Sinais de Trading v9.0
-AUTO-SCANNER + AUTO-APRENDE + HELIUS + BACKTESTING + ANTI-FOMO
-
-NOVIDADES v7 (baseadas em análise de 11+ moedas reais):
-[OK] Cada moeda alertada UMA SÓ VEZ
-[OK] CA em bloco de código — copy-paste direto no Discord
-[OK] Monitoriza pump.fun E DexScreener em simultâneo
-[OK] Filtro de Market Cap ($100K–$500K = sweet spot)
-[OK] Filtro de Liquidity ($25K–$65K = ideal)
-[OK] Ratio Vol1H/Vol24H > 5% = momentum (ou volume absoluto alto)
-[OK] Atualização a cada 20 minutos após alerta
-[OK] Aprende sozinho 2h após cada alerta
-
-FILTROS COMBINADOS (dados reais):
-Market Cap:  $100K–$500K
-Liquidity:   $25K–$65K
-Vol1H/24H:   >5% (ou vol1h absoluto >$50K)
-Categoria:   só ROCKET e BOM (+50% potencial)
-
-# INSTALACAO:  pip install websockets aiohttp
-COMO USAR:   python trading_bot_v7.py
-[AVISO]  Não garante lucro. Investe só o que podes perder.
-
-“””
+# Filtros: MCap $80K-$500K | Liq $12K-$70K | Vol>5%
 
 import asyncio, csv, json, os, time, aiohttp, websockets
 from datetime import datetime, timezone
@@ -37,7 +12,7 @@ from collections import deque
 
 # ———————————————
 
-BOT_VERSION  = “v11.5 — 22/02/2026”
+BOT_VERSION  = “v11.5 - 22/02/2026”
 
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
