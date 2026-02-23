@@ -14,6 +14,7 @@ BOT_VERSION  = "v11.5 - 22/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
+RESULTS_WEBHOOK_URL = os.environ.get("RESULTS_WEBHOOK_URL", "")  # canal #resultados
 HELIUS_API_KEY      = os.environ.get("HELIUS_API_KEY", "COLA_AQUI_A_TUA_HELIUS_KEY")
 
 # -- RAILWAY API - para guardar aprendizagem como varivel de ambiente --
@@ -492,11 +493,11 @@ def check_mcap_liq_vol(mint) -> tuple:
     if mcap > 0:
         if CONFIG["mcap_min"] <= mcap <= CONFIG["mcap_max"]:
             pts = int(w["mcap_good"]); score += pts
-            signals.append(f"? Market Cap ${mcap/1000:.0f}K - sweet spot (+{pts}pts)")
+            signals.append(f"💎 Market Cap ${mcap/1000:.0f}K - sweet spot (+{pts}pts)")
             active.append("mcap_good")
         elif mcap > CONFIG["mcap_max"]:
             score += int(w["mcap_bad"])
-            signals.append(f"? Market Cap ${mcap/1000:.0f}K - muito alto ({w['mcap_bad']:.0f}pts)")
+            signals.append(f"⚠️ Market Cap ${mcap/1000:.0f}K - muito alto ({w['mcap_bad']:.0f}pts)")
             active.append("mcap_bad")
             if mcap > 800_000:
                 passed = False  # bloqueia completamente acima de $800K
@@ -519,22 +520,22 @@ def check_mcap_liq_vol(mint) -> tuple:
         if 25_000 <= liq <= CONFIG["liq_max"]:
             # Sweet spot ideal $25K-$65K
             pts = int(w["liq_good"]); score += pts
-            signals.append(f"? Liquidez ${liq/1000:.0f}K - ideal (+{pts}pts)")
+            signals.append(f"💧 Liquidez ${liq/1000:.0f}K - ideal (+{pts}pts)")
             active.append("liq_good")
         elif CONFIG["liq_min"] <= liq < 25_000:
             # Zona cedo $12K-$25K - liquidez baixa mas moeda nova com potencial
             # Precisa de compensar com outros sinais fortes
             pts = int(w.get("liq_growing", 8)); score += pts
-            signals.append(f"? Liquidez ${liq/1000:.0f}K - cedo, a crescer (+{pts}pts) ??")
+            signals.append(f"💧 Liquidez ${liq/1000:.0f}K - cedo, a crescer (+{pts}pts) ??")
             active.append("liq_growing")
         elif liq > CONFIG["liq_max"]:
             score += int(w["liq_bad"])
-            signals.append(f"? Liquidez ${liq/1000:.0f}K - alta, ja comprado ({w['liq_bad']:.0f}pts)")
+            signals.append(f"💧 Liquidez ${liq/1000:.0f}K - alta, ja comprado ({w['liq_bad']:.0f}pts)")
             active.append("liq_bad")
         else:
             # Abaixo de $12K - muito arriscado
             score += int(w["liq_bad"])
-            signals.append(f"? Liquidez ${liq/1000:.0f}K - muito baixa, risco alto ({w['liq_bad']:.0f}pts)")
+            signals.append(f"💧 Liquidez ${liq/1000:.0f}K - muito baixa, risco alto ({w['liq_bad']:.0f}pts)")
             active.append("liq_bad")
 
     # -- RATIO VOL 1H / 24H ----------------------
@@ -543,20 +544,20 @@ def check_mcap_liq_vol(mint) -> tuple:
         if ratio >= 0.30:
             # Volume muito alto - moeda a explodir agora
             pts = int(w["vol_ratio_good"]) + 10; score += pts
-            signals.append(f"? Vol1H/24H: {ratio*100:.0f}% - momentum explosivo (+{pts}pts)")
+            signals.append(f"📈 Vol1H/24H: {ratio*100:.0f}% - momentum explosivo (+{pts}pts)")
             active.append("vol_ratio_good"); active.append("volume_spike")
         elif ratio >= 0.15:
             # Volume alto - bom sinal
             pts = int(w["vol_ratio_good"]); score += pts
-            signals.append(f"? Vol1H/24H: {ratio*100:.0f}% - momentum forte (+{pts}pts)")
+            signals.append(f"📈 Vol1H/24H: {ratio*100:.0f}% - momentum forte (+{pts}pts)")
             active.append("vol_ratio_good")
         elif ratio >= CONFIG["vol_ratio_min"]:
             # Volume moderado - passa mas com menos pontos
             pts = int(w["vol_ratio_good"]) // 2; score += pts
-            signals.append(f"? Vol1H/24H: {ratio*100:.0f}% - momentum moderado (+{pts}pts)")
+            signals.append(f"📈 Vol1H/24H: {ratio*100:.0f}% - momentum moderado (+{pts}pts)")
             active.append("vol_ratio_good")
         else:
-            signals.append(f"? Vol1H/24H: {ratio*100:.0f}% - momentum fraco")
+            signals.append(f"📉 Vol1H/24H: {ratio*100:.0f}% - momentum fraco")
 
     return passed, score, signals, active
 
@@ -570,7 +571,7 @@ def calculate_confidence(mint):
         return {"score": 0, "signals": [], "verdict": "SEM DADOS", "category": None,
                 "active_signals": [], "blocked": False}
     if check_micropump(mint):
-        return {"score": 0, "signals": ["? MICRO-PUMP"], "verdict": "? MICRO-PUMP",
+        return {"score": 0, "signals": ["⚠️ MICRO-PUMP"], "verdict": "⚠️ MICRO-PUMP",
                 "category": "MICROPUMP", "active_signals": [], "blocked": False}
 
     signals, active, score = [], [], 0
@@ -583,23 +584,23 @@ def calculate_confidence(mint):
     # 1. Janela horria
     if in_hot:
         pts = int(w["hot_window"]); score += pts
-        signals.append(f"? Janela 23h-03h (+{pts}pts)"); active.append("hot_window")
+        signals.append(f"🌙 Janela 23h-03h (+{pts}pts)"); active.append("hot_window")
     else:
-        signals.append("? Fora da janela 23h-03h")
+        signals.append("🕐 Fora da janela 23h-03h")
 
     # 2. Preo
     ap = d.get("alert_price") or (prices[-1] if prices else 0)
     if ap > 0:
         if ap < 0.00030:
             pts = int(w["price_low"]); score += pts
-            signals.append(f"? Preco baixo ${ap:.7f} (+{pts}pts)"); active.append("price_low")
+            signals.append(f"💰 Preco baixo ${ap:.7f} (+{pts}pts)"); active.append("price_low")
         elif ap < 0.00050:
-            signals.append(f"? Preco medio ${ap:.7f}")
+            signals.append(f"💰 Preco medio ${ap:.7f}")
         elif not in_hot:
             score += int(w["price_high_pen"])
-            signals.append(f"? Preco alto ${ap:.7f} ({w['price_high_pen']:.0f}pts)"); active.append("price_high_pen")
+            signals.append(f"⚠️ Preco alto ${ap:.7f} ({w['price_high_pen']:.0f}pts)"); active.append("price_high_pen")
         else:
-            signals.append(f"? Preco alto ${ap:.7f} na janela (neutro)")
+            signals.append(f"⚠️ Preco alto ${ap:.7f} na janela (neutro)")
 
     # 3. Market Cap + Liquidity + Vol ratio (NOVOS FILTROS v7)
     # -- FILTRO DE MOMENTUM - 3 janelas (5m + 1h + 6h) --------
@@ -647,8 +648,8 @@ def calculate_confidence(mint):
 
     passed, mcap_score, mcap_signals, mcap_active = check_mcap_liq_vol(mint)
     if not passed:
-        return {"score": 0, "signals": [f"? Bloqueado - Market Cap demasiado alto"],
-                "verdict": "? BLOQUEADO", "category": "FRACO",
+        return {"score": 0, "signals": [f"🚫 Bloqueado - Market Cap demasiado alto"],
+                "verdict": "🚫 BLOQUEADO", "category": "FRACO",
                 "active_signals": [], "blocked": True}
     score += mcap_score
     signals.extend(mcap_signals)
@@ -660,16 +661,16 @@ def calculate_confidence(mint):
         br = d["buy_count"] / total
         if br >= 0.65:
             pts = int(br * w["buy_pressure"]); score += pts
-            signals.append(f"? Compra: {br*100:.0f}% buys (+{pts}pts)"); active.append("buy_pressure")
+            signals.append(f"🟢 Compra: {br*100:.0f}% buys (+{pts}pts)"); active.append("buy_pressure")
         elif br < 0.35:
-            score -= 15; signals.append(f"? Venda: {br*100:.0f}% buys (-15pts)")
+            score -= 15; signals.append(f"🔴 Venda: {br*100:.0f}% buys (-15pts)")
 
     # 5. Spike de volume
     if len(volumes) >= 4:
         avg = sum(list(volumes)[:-2]) / max(len(volumes)-2, 1); lat = volumes[-1]
         if avg > 0 and lat > avg * CONFIG["volume_spike_x"]:
             pts = min(int(w["volume_spike"]), int((lat/avg)*7)); score += pts
-            signals.append(f"? Volume spike: {lat/avg:.1f}x (+{pts}pts)"); active.append("volume_spike")
+            signals.append(f"⚡ Volume spike: {lat/avg:.1f}x (+{pts}pts)"); active.append("volume_spike")
 
     # 6. Momentum
     now = time.time(); tl = d["volume_timeline"]; mw = CONFIG["momentum_window"]
@@ -680,10 +681,10 @@ def calculate_confidence(mint):
             ratio = ar / ao
             if ratio >= 1.5:
                 pts = min(int(w["momentum"]), int(ratio*8)); score += pts
-                signals.append(f"? Momentum: {ratio:.1f}x (+{pts}pts)"); active.append("momentum")
+                signals.append(f"📈 Momentum: {ratio:.1f}x (+{pts}pts)"); active.append("momentum")
             elif ratio < 0.6:
                 score += int(w["momentum_pen"])
-                signals.append(f"? Momentum a cair ({w['momentum_pen']:.0f}pts)"); active.append("momentum_pen")
+                signals.append(f"📉 Momentum a cair ({w['momentum_pen']:.0f}pts)"); active.append("momentum_pen")
 
     # 7. Tendncia de preo - bloqueia moedas em queda
     if len(prices) >= 2 and prices[0] > 0:
@@ -703,8 +704,8 @@ def calculate_confidence(mint):
         # Caindo -10% recentemente E tendncia geral negativa = bloqueia
         return {
             "score": 0,
-            "signals": [f"? Bloqueado - preco em queda ({trend_recent*100:.1f}% recente, {trend_overall*100:.1f}% geral)"],
-            "verdict": "? BLOQUEADO",
+            "signals": [f"🚫 Bloqueado - preco em queda ({trend_recent*100:.1f}% recente, {trend_overall*100:.1f}% geral)"],
+            "verdict": "🚫 BLOQUEADO",
             "category": "FRACO",
             "active_signals": [],
             "blocked": True
@@ -712,7 +713,7 @@ def calculate_confidence(mint):
     elif trend_recent >= 0.05:
         # Subida recente - bom sinal
         pts = min(int(w["price_rise"]), int(trend_recent*150)); score += pts
-        signals.append(f"? Preco +{trend_recent*100:.1f}% (+{pts}pts)"); active.append("price_rise")
+        signals.append(f"📈 Preco +{trend_recent*100:.1f}% (+{pts}pts)"); active.append("price_rise")
     elif trend_recent <= -0.05:
         # Queda leve - penaliza mas no bloqueia
         score += int(w["price_fall_pen"])
@@ -726,7 +727,7 @@ def calculate_confidence(mint):
             tps = len(rt) / dur
             if tps > 0.5:
                 pts = min(int(w["trade_freq"]), int(tps*8)); score += pts
-                signals.append(f"? Freq: {tps:.2f}/s (+{pts}pts)"); active.append("trade_freq")
+                signals.append(f"⚡ Freq: {tps:.2f}/s (+{pts}pts)"); active.append("trade_freq")
 
     # 8a-extra. Padro histrico - baseado em backtesting
     if len(pattern_history) >= 20:
@@ -742,7 +743,7 @@ def calculate_confidence(mint):
             avg_gain = sum(p.get("result",0) for p in similar) / len(similar)
             if win_rate >= 0.70:
                 pts = int(w.get("pattern_strong", 35)); score += pts
-                signals.append(f"? Padrao historico: {win_rate*100:.0f}% acerto em {len(similar)} casos (+{pts}pts)")
+                signals.append(f"🎯 Padrao historico: {win_rate*100:.0f}% acerto em {len(similar)} casos (+{pts}pts)")
                 active.append("pattern_strong")
                 d["pattern_win_rate"] = win_rate
                 d["pattern_avg_gain"] = avg_gain
@@ -758,7 +759,7 @@ def calculate_confidence(mint):
         th = successful_themes[theme]
         if th.get("count_total",0) >= 3 and th.get("count_success",0)/th.get("count_total",1) >= 0.60:
             pts = int(w.get("theme_hot", 20)); score += pts
-            signals.append(f"? Tema '{theme}' em trend - {th['count_success']}/{th['count_total']} subiram (+{pts}pts)")
+            signals.append(f"🔥 Tema '{theme}' em trend - {th['count_success']}/{th['count_total']} subiram (+{pts}pts)")
             active.append("theme_hot")
 
     # 8a-extra3. Volume por carteira (whales)
@@ -768,10 +769,10 @@ def calculate_confidence(mint):
         whale_count    = sum(1 for v in wv.values() if v >= 5)
         if whale_count >= 2:
             pts = int(w.get("whale_multi", 40)); score += pts
-            signals.append(f"? {whale_count} baleias compraram (+{pts}pts)"); active.append("whale_multi")
+            signals.append(f"🐋 {whale_count} baleias compraram (+{pts}pts)"); active.append("whale_multi")
         elif top_wallet_vol >= 5:
             pts = int(w.get("whale_buy", 30)); score += pts
-            signals.append(f"? Baleia comprou {top_wallet_vol:.0f} SOL (+{pts}pts)"); active.append("whale_buy")
+            signals.append(f"🐋 Baleia comprou {top_wallet_vol:.0f} SOL (+{pts}pts)"); active.append("whale_buy")
 
     # 8b-hora. Hora historicamente boa/fraca
     current_hour = datetime.now().hour
@@ -781,11 +782,11 @@ def calculate_confidence(mint):
         h_rate = h_stats.get("wins", 0) / h_total
         if h_rate >= 0.65:
             pts = int(w.get("hot_hour", 15)); score += pts
-            signals.append(f"? Hora {current_hour}h historicamente forte ({h_rate*100:.0f}% acerto) (+{pts}pts)")
+            signals.append(f"• Hora {current_hour}h historicamente forte ({h_rate*100:.0f}% acerto) (+{pts}pts)")
             active.append("hot_hour")
         elif h_rate < 0.35:
             score += int(w.get("cold_hour", -10))
-            signals.append(f"? Hora {current_hour}h historicamente fraca ({h_rate*100:.0f}% acerto) ({w.get('cold_hour',-10):.0f}pts)")
+            signals.append(f"• Hora {current_hour}h historicamente fraca ({h_rate*100:.0f}% acerto) ({w.get('cold_hour',-10):.0f}pts)")
             active.append("cold_hour")
 
     # -- NOVAS MELHORIAS v11 ----------------------------------
@@ -795,7 +796,7 @@ def calculate_confidence(mint):
         already_up = (prices[-1] - prices[0]) / prices[0]
         if already_up >= 1.5:  # ja subiu +150% antes do bot a detetar
             score += int(w.get("anti_fomo", -30))
-            signals.append(f"? Anti-fomo: ja subiu +{already_up*100:.0f}% antes do alerta ({w.get('anti_fomo',-30):.0f}pts)")
+            signals.append(f"• Anti-fomo: ja subiu +{already_up*100:.0f}% antes do alerta ({w.get('anti_fomo',-30):.0f}pts)")
             active.append("anti_fomo")
         elif already_up >= 0.8:
             signals.append(f"?? Ja subiu +{already_up*100:.0f}% - verifica se ainda tem espaco")
@@ -808,11 +809,11 @@ def calculate_confidence(mint):
         holders_per_min = (h2 - h1) / elapsed_min
         if holders_per_min >= 10:
             pts = int(w.get("holder_momentum", 35)); score += pts
-            signals.append(f"? Holders: +{holders_per_min:.0f}/min - a explodir (+{pts}pts)")
+            signals.append(f"• Holders: +{holders_per_min:.0f}/min - a explodir (+{pts}pts)")
             active.append("holder_momentum")
         elif holders_per_min >= 3:
             pts = int(w.get("holder_momentum", 35)) // 2; score += pts
-            signals.append(f"? Holders: +{holders_per_min:.1f}/min - a crescer (+{pts}pts)")
+            signals.append(f"• Holders: +{holders_per_min:.1f}/min - a crescer (+{pts}pts)")
             active.append("holder_momentum")
 
     # C. COPY-CAT - tema de moeda que explodiu recentemente
@@ -823,7 +824,7 @@ def calculate_confidence(mint):
         if not rocket_theme: continue
         if rocket_theme in name_lower or any(kw in name_lower for kw in rocket_theme.split()):
             pts = int(w.get("copycat_bonus", 25)); score += pts
-            signals.append(f"? Copy-cat de {rocket['name']} (+{rocket['gain']:.0f}%) - tema '{rocket_theme}' (+{pts}pts)")
+            signals.append(f"⚠️ Copy-cat de {rocket['name']} (+{rocket['gain']:.0f}%) - tema '{rocket_theme}' (+{pts}pts)")
             active.append("copycat_bonus")
             break
 
@@ -833,24 +834,24 @@ def calculate_confidence(mint):
                          "concentration_bad","momentum_pen","price_high_pen","cold_hour","stop_loss_risk")]
     if len(positive_signals) >= 8:
         pts = int(w.get("signal_consensus", 20)); score += pts
-        signals.append(f"? Consenso: {len(positive_signals)} sinais positivos concordam (+{pts}pts)")
+        signals.append(f"• Consenso: {len(positive_signals)} sinais positivos concordam (+{pts}pts)")
         active.append("signal_consensus")
     elif len(positive_signals) >= 6:
         pts = int(w.get("signal_consensus", 20)) // 2; score += pts
-        signals.append(f"? Consenso: {len(positive_signals)} sinais positivos (+{pts}pts)")
+        signals.append(f"• Consenso: {len(positive_signals)} sinais positivos (+{pts}pts)")
         active.append("signal_consensus")
 
     # F. BAD DEV - carteira do dev j fez rugpull antes
     dev_wallet = token_dev_wallet.get(mint, "")
     if dev_wallet and dev_wallet in BAD_DEV_WALLETS:
         score += int(w.get("bad_dev", -60))
-        signals.append(f"? Dev ja fez rugpull antes! ({w.get('bad_dev',-60):.0f}pts)")
+        signals.append(f"• Dev ja fez rugpull antes! ({w.get('bad_dev',-60):.0f}pts)")
         active.append("bad_dev")
         # Se dev  conhecido por rugpull, bloqueia diretamente
         return {
             "score": 0,
-            "signals": [f"? BLOQUEADO - dev desta carteira ja fez rugpull ({dev_wallet[:16]}...)"],
-            "verdict": "? BLOQUEADO",
+            "signals": [f"🚫 BLOQUEADO - dev desta carteira ja fez rugpull ({dev_wallet[:16]}...)"],
+            "verdict": "🚫 BLOQUEADO",
             "category": "FRACO",
             "active_signals": [],
             "blocked": True
@@ -867,7 +868,7 @@ def calculate_confidence(mint):
             cv        = std_dev / avg_buy  # 0 = todas iguais, 1+ = muito variadas
             if cv < 0.15:  # compras quase todas iguais = bot
                 score += int(w.get("bundle_buy", -40))
-                signals.append(f"? Bundle buy detetado - {len(early)} compras identicas (cv={cv:.2f}) ({w.get('bundle_buy',-40):.0f}pts)")
+                signals.append(f"• Bundle buy detetado - {len(early)} compras identicas (cv={cv:.2f}) ({w.get('bundle_buy',-40):.0f}pts)")
                 active.append("bundle_buy")
 
     # H. LIQUIDEZ vs PREO DIVERGNCIA - preo sobe mas liquidez no acompanha
@@ -920,18 +921,18 @@ def calculate_confidence(mint):
             }
         if holders >= 100:
             pts = int(w["holders_good"]); score += pts
-            signals.append(f"? Holders: {holders} - seguro (+{pts}pts)"); active.append("holders_good")
+            signals.append(f"👥 Holders: {holders} - seguro (+{pts}pts)"); active.append("holders_good")
         elif holders < 50:
             score += int(w["holders_bad"])
-            signals.append(f"? Holders: {holders} - risco rugpull ({w['holders_bad']:.0f}pts)"); active.append("holders_bad")
+            signals.append(f"👥 Holders: {holders} - risco rugpull ({w['holders_bad']:.0f}pts)"); active.append("holders_bad")
 
     if top10_pct > 0:
         if top10_pct <= 30:
             pts = int(w["concentration_ok"]); score += pts
-            signals.append(f"? Top10: {top10_pct:.0f}% - concentracao saudavel (+{pts}pts)"); active.append("concentration_ok")
+            signals.append(f"• Top10: {top10_pct:.0f}% - concentracao saudavel (+{pts}pts)"); active.append("concentration_ok")
         elif top10_pct > 50:
             score += int(w["concentration_bad"])
-            signals.append(f"? Top10: {top10_pct:.0f}% - muito concentrado ({w['concentration_bad']:.0f}pts)"); active.append("concentration_bad")
+            signals.append(f"• Top10: {top10_pct:.0f}% - muito concentrado ({w['concentration_bad']:.0f}pts)"); active.append("concentration_bad")
 
     if dev_holds is not None:
         if dev_holds:
@@ -942,8 +943,8 @@ def calculate_confidence(mint):
             signals.append(f"??? Dev ja vendeu ({w['dev_sold']:.0f}pts) ??"); active.append("dev_sold")
 
     score = max(0, min(100, score))
-    if   score >= 70 and in_hot: cat, v = "ROCKET", "? ROCKET - alto potencial"
-    elif score >= 55:             cat, v = "BOM",    "? BOM SINAL - potencial moderado"
+    if   score >= 70 and in_hot: cat, v = "ROCKET", "🚀 ROCKET - alto potencial"
+    elif score >= 55:             cat, v = "BOM",    "✅ BOM SINAL - potencial moderado"
     elif score >= 35:             cat, v = "FRACO",  "? FRACO - ignorado"
     else:                         cat, v = "FRACO",  "? SEM SINAL"
     return {"score": score, "signals": signals, "verdict": v, "category": cat,
@@ -1139,6 +1140,12 @@ async def check_and_learn(mint, check_data):
     change     = (current_price - alert_price) / alert_price
     elapsed_h  = (time.time() - check_data["alert_time"]) / 3600
 
+    # Atualiza preco maximo atingido
+    prev_max = check_data.get("max_price", alert_price)
+    if current_price > prev_max:
+        check_data["max_price"] = current_price
+    max_gain = (check_data.get("max_price", alert_price) - alert_price) / alert_price
+
     # ESTAGNAO - se passou muito tempo e no subiu 50%, conta como falha
     # Moeda "morta" que ficou entre -20% e +20%  to m como uma queda
     stagnant = (abs(change) < 0.20 and elapsed_h >= 1.5)
@@ -1274,6 +1281,27 @@ async def check_and_learn(mint, check_data):
         print(f"  ??  Pesos ajustados: {changed}")
     print(f"{_sep}\n")
 
+    # Envia para #resultados se atingiu +100%
+    if RESULTS_WEBHOOK_URL and "COLA" not in RESULTS_WEBHOOK_URL:
+        _max_p = check_data.get("max_price", current_price)
+        if current_price > _max_p: _max_p = current_price
+        check_data["max_price"] = _max_p
+        _max_g = (_max_p - alert_price) / alert_price if alert_price > 0 else 0
+        if _max_g >= 1.0 and not check_data.get("results_sent", False):
+            check_data["results_sent"] = True
+            _t = time.strftime("%H:%M", time.localtime(check_data["alert_time"]))
+            try:
+                async with aiohttp.ClientSession() as _s:
+                    await _s.post(RESULTS_WEBHOOK_URL, json={"embeds": [{
+                        "title": f"\U0001f3c6 {name}",
+                        "description": f"Alertado as **{_t}** | Pico: **+{_max_g*100:.0f}%**",
+                        "color": 0x00ff00,
+                        "footer": {"text": f"Trading Bot {BOT_VERSION}"},
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }]}, timeout=aiohttp.ClientTimeout(total=5))
+                print(f"[Resultados] {name} +{_max_g*100:.0f}% enviado")
+            except Exception: pass
+
     # -- 6. LOG CSV -------------------------------------------
     with open(CONFIG["log_file"], "a", newline="") as f:
         import csv as _csv
@@ -1328,7 +1356,7 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
         ),
         "color": color,
         "fields": [],
-        "footer":    {"text": f"Trading Bot {BOT_VERSION} ? Alerta #{alerts_sent+1}  Fonte: {source}"},
+        "footer":    {"text": f"Trading Bot {BOT_VERSION} •  Alerta #{alerts_sent+1}  Fonte: {source}"},
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
@@ -1365,10 +1393,10 @@ def calc_sell_probability(mint, dex, pct):
             vol_trend = recent_vol / older_vol
             if vol_trend < 0.6:
                 risk_score += 25
-                warnings.append("? Volume a cair nas ultimas atualizacoes")
+                warnings.append("Volume a cair nas ultimas atualizacoes")
             elif vol_trend > 1.3:
                 risk_score -= 15
-                positives.append("? Volume a crescer - momentum continua")
+                positives.append("Volume a crescer - momentum continua")
 
     # 2. Ratio compras/vendas atual
     buys  = d.get("buy_count", 0)
@@ -1392,7 +1420,7 @@ def calc_sell_probability(mint, dex, pct):
         warnings.append("?? Dev ja vendeu os tokens")
     elif d.get("dev_still_holds") is True:
         risk_score -= 10
-        positives.append("? Dev ainda tem tokens")
+        positives.append("Dev ainda tem tokens")
 
     # 4. Concentrao de holders
     top10 = d.get("top10_pct", 0)
@@ -1461,7 +1489,7 @@ async def send_discord_movement(mint, alert_data, current_price, pct, direction,
         analysis_lines.append("**? Sinais positivos:**")
         analysis_lines.extend([f"? {p}" for p in positives])
     if not warnings and not positives:
-        analysis_lines.append("? Sem sinais claros - mantem atencao")
+        analysis_lines.append("Sem sinais claros - mantem atencao")
     analysis_text = "\n".join(analysis_lines)[:800]
 
     # Preco alvo historico baseado no padrao de sinais
@@ -1502,9 +1530,9 @@ async def send_discord_movement(mint, alert_data, current_price, pct, direction,
     dex_url = f"https://dexscreener.com/solana/{mint}"
 
     fields = [
-        {"name": "? Variacao total",  "value": f"**{pct:+.1f}%** em {elapsed}min", "inline": True},
-        {"name": "? Prob. continuar", "value": f"**{prob_up}%**",                   "inline": True},
-        {"name": "? Prob. corrigir",  "value": f"**{prob_down}%**",                 "inline": True},
+        {"name": "Variacao total",  "value": f"**{pct:+.1f}%** em {elapsed}min", "inline": True},
+        {"name": "Prob. continuar", "value": f"**{prob_up}%**",                   "inline": True},
+        {"name": "Prob. corrigir",  "value": f"**{prob_down}%**",                 "inline": True},
         {"name": rec,                  "value": analysis_text,                        "inline": False},
     ]
     if target_field: fields.append(target_field)
