@@ -632,7 +632,7 @@ def calculate_confidence(mint):
     # BLOQUEIO 2b - moeda velha sem novo impulso: subiu muito em 24h mas agora fraca
     # Exemplo: SOL +74% 24h mas apenas +8% 1h e +1% 5m = pump ja acabou
     p5m_raw = d.get("p5m", 0)
-    if p24h > 50 and p1h < 15 and p5m_raw < 5:
+    if p24h > 50 and p1h < 10 and p5m_raw < 3:
         return {"score": 0,
                 "signals": [f"Bloqueado - pump antigo sem novo impulso (24h:+{p24h:.0f}% mas 1h:{p1h:.1f}% 5m:{p5m_raw:.1f}%)"],
                 "verdict": "BLOQUEADO", "category": "FRACO",
@@ -640,16 +640,16 @@ def calculate_confidence(mint):
 
     # BLOQUEIO 3 - ja bateu o topo: subiu muito em 6h mas agora fraca em 1h
     # Ex: +300% em 6h mas so +3% em 1h = pump ja aconteceu
-    if p6h >= 200 and p1h < 10:
+    if p6h >= 200 and p1h < 20:
         return {
             "score": 0,
-            "signals": [f"Bloqueado - topo atingido (6h:+{p6h:.0f}% mas 1h:{p1h:.1f}%)"],
+            "signals": [f"Bloqueado - topo atingido sem forca (6h:+{p6h:.0f}% e 1h:{p1h:.1f}%<20%)"],
             "verdict": "BLOQUEADO", "category": "FRACO",
             "active_signals": [], "blocked": True
         }
 
     # BLOQUEIO 4 - pump muito antigo: subiu muito em 24h mas 6h e 1h fracas
-    if p24h >= 300 and p6h < 20 and p1h < 5:
+    if p24h >= 500 and p6h < 10 and p1h < 5:
         return {
             "score": 0,
             "signals": [f"Bloqueado - pump antigo (24h:+{p24h:.0f}% mas 6h:{p6h:.1f}% 1h:{p1h:.1f}%)"],
