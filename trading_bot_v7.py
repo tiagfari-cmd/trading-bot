@@ -582,10 +582,9 @@ def calculate_confidence(mint):
     trades  = list(d["trades"])
     in_hot  = is_hot_window()
 
-    # 1. Janela horria
+    # 1. Janela horaria - apenas informativo, nao afeta score
     if in_hot:
-        pts = int(w["hot_window"]); score += pts
-        signals.append(f"🌙 Janela 23h-03h (+{pts}pts)"); active.append("hot_window")
+        signals.append("🌙 Janela 23h-03h")
     else:
         signals.append("🕐 Fora da janela 23h-03h")
 
@@ -792,7 +791,6 @@ def calculate_confidence(mint):
     if h_total >= 10:
         h_rate = h_stats.get("wins", 0) / h_total
         if h_rate >= 0.65:
-            pts = int(w.get("hot_hour", 15)); score += pts
             signals.append(f"• Hora {current_hour}h historicamente forte ({h_rate*100:.0f}% acerto) (+{pts}pts)")
             active.append("hot_hour")
         elif h_rate < 0.35:
@@ -954,7 +952,7 @@ def calculate_confidence(mint):
             signals.append(f"??? Dev ja vendeu ({w['dev_sold']:.0f}pts) ??"); active.append("dev_sold")
 
     score = max(0, min(100, score))
-    if   score >= 70 and in_hot: cat, v = "ROCKET", "🚀 ROCKET - alto potencial"
+    if   score >= 70:            cat, v = "ROCKET", "🚀 ROCKET - alto potencial"
     elif score >= 55:             cat, v = "BOM",    "✅ BOM SINAL - potencial moderado"
     elif score >= 35:             cat, v = "FRACO",  "? FRACO - ignorado"
     else:                         cat, v = "FRACO",  "? SEM SINAL"
