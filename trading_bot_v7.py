@@ -1972,9 +1972,13 @@ async def dexscreener_scanner():
                                     })
                             else:
                                 pairs = (data.get("pairs") or [])[:limit]
+                            # Filtra pares invalidos antes de processar
+                            pairs = [p for p in pairs if isinstance(p, dict)]
                             found = await _process_dex_pairs(pairs, "DexScreener/" + label)
                             if found > 0:
                                 print(f"[DexScreener/{label}] {found} novas moedas")
+                    except (ValueError, TypeError, KeyError):
+                        pass  # formato inesperado - ignora silenciosamente
                     except Exception as e:
                         print(f"[DexScreener/{label}] Erro: {type(e).__name__}")
         except Exception as e:
