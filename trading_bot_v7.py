@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.5 - 22/02/2026"
+BOT_VERSION  = "v11.5.1 - 26/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -1150,12 +1150,12 @@ async def enrich_token_helius(mint):
     print(f"[Helius] {d.get('name','?')} - {data['holders']} holders | top10: {data['top10_pct']:.0f}% | dev: {'?' if data['dev_still_holds'] else '? vendeu'}")
 
 # ---------------------------------------------
-#   APRENDIZAGEM (2h depois)
+#   APRENDIZAGEM (1h depois)
 # ---------------------------------------------
 
 async def check_and_learn(mint, check_data):
     """
-    Verifica resultado 2h apos alerta e aprende automaticamente.
+    Verifica resultado 1h apos alerta e aprende automaticamente.
     Analisa PORQU? falhou ou teve sucesso e ajusta os pesos certos.
     """
     global WEIGHTS, learns_done
@@ -1224,7 +1224,7 @@ async def check_and_learn(mint, check_data):
         if alert_dev is False:
             diagnosis.append(("dev_sold", "Dev ja tinha vendido ? sinal negativo confirmado"))
         if stagnant:
-            diagnosis.append(("momentum", "Moeda estagnada - nao subiu apos 2h"))
+            diagnosis.append(("momentum", "Moeda estagnada - nao subiu apos 1h"))
             diagnosis.append(("vol_ratio_good", "Volume nao foi suficiente para mover o preco"))
         elif change < -0.1:
             # Caiu mesmo -> todos os sinais ativos so suspeitos
@@ -1241,7 +1241,7 @@ async def check_and_learn(mint, check_data):
     # Foco em exploses rpidas - aprende mais com ganhos nas primeiras horas
     hours_since = (time.time() - check_data.get("alert_time", time.time())) / 3600
     if hours_since <= 2 and change >= 0.50:
-        change_w = change * 1.5   # exploso nas primeiras 2h - aprende agressivamente
+        change_w = change * 1.5   # exploso na primeira 1h - aprende agressivamente
         print(f"[Aprendizagem] ? Explosao rapida ({hours_since:.1f}h) - peso x1.5")
     elif hours_since <= 6 and change >= 1.0:
         change_w = change * 1.2   # exploso at 6h - ainda muito bom
@@ -1362,7 +1362,7 @@ async def check_and_learn(mint, check_data):
         import csv as _csv
         w = _csv.writer(f)
         w.writerow([time.time(), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    mint, name, "VERIFICACAO_2H",
+                    mint, name, "VERIFICACAO_1H",
                     alert_price, current_price, result_str,
                     "SUCESSO" if success else "FALHOU",
                     str([d[1] for d in diagnosis])])
@@ -2110,7 +2110,7 @@ async def update_loop():
 
 async def learn_from_silent():
     """
-    Verifica 2h depois moedas que passaram os filtros fora da janela.
+    Verifica 1h depois moedas que passaram os filtros fora da janela.
     Aprende com elas sem ter alertado - aprendizagem 24/7.
     """
     global WEIGHTS, learns_done
@@ -2166,7 +2166,7 @@ async def learn_from_silent():
 
 async def learn_from_skipped():
     """
-    Verifica 2h depois moedas que o bot IGNOROU.
+    Verifica 1h depois moedas que o bot IGNOROU.
     Se subiram muito, aprende que estava a filtrar errado.
     Esta e uma das aprendizagens mais valiosas - oportunidades perdidas.
     """
@@ -2615,8 +2615,9 @@ async def retroactive_learning():
 
     urls = [
         "https://api.dexscreener.com/latest/dex/search?q=solana&order=gainers",
-        "https://api.dexscreener.com/token-boosts/latest/v1",
-        "https://api.dexscreener.com/latest/dex/search?q=solana",
+        "https://api.dexscreener.com/latest/dex/search?q=pump.fun&order=gainers",
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20memecoin",
+        "https://api.dexscreener.com/latest/dex/search?q=solana&order=volume",
     ]
 
     already_in = {p.get("name", "") for p in pattern_history}
@@ -2637,8 +2638,9 @@ async def retroactive_learning():
 
                 for pair in pairs[:50]:
                     try:
-                        # So interessa Solana
-                        if pair.get("chainId") != "solana": continue
+                        # Filtra so Solana
+                        chain = pair.get("chainId", "solana")
+                        if chain and chain != "solana": continue
 
                         info   = pair.get("baseToken", {})
                         name   = info.get("name", "")
@@ -2649,8 +2651,8 @@ async def retroactive_learning():
                         p6h    = float(chg.get("h6")  or 0)
                         p1h    = float(chg.get("h1")  or 0)
 
-                        # So aprende com moedas que subiram muito - casos claros
-                        if p24h < 200: continue
+                        # Aprende com moedas que subiram pelo menos 100%
+                        if p24h < 100: continue
 
                         liq    = float((pair.get("liquidity") or {}).get("usd", 0) or 0)
                         mcap   = float(pair.get("marketCap", 0) or 0)
@@ -2709,7 +2711,7 @@ async def maintenance_loop():
         await asyncio.sleep(30)
         now = time.time()
 
-        # Verifica alertas 2h depois -> aprende
+        # Verifica alertas 1h depois -> aprende
         for mint in [m for m,chk in list(pending_checks.items()) if now >= chk["check_at"]]:
             pass  # removido - aprendizagem agora e feita por checkpoints no maintenance_loop
 
@@ -2772,7 +2774,7 @@ async def main():
     print(f"  Filtros    : MCap $100K-$500K | Liq $12K-$70K | Vol1H>5% ou Vol>$50K abs")
     print(f"  Categoria  : so ROCKET e BOM (+50% potencial)")
     print(f"  Updates    : a cada 20 minutos por moeda alertada")
-    print(f"  Aprende    : verifica resultado 2h apos cada alerta")
+    print(f"  Aprende    : verifica resultado 1h apos cada alerta")
     print(f"  Repeticao  : NUNCA - cada moeda alertada so 1 vez")
     print(f"  Discord    : {'? configurado' if 'COLA' not in DISCORD_WEBHOOK_URL else '??  nao configurado'}")
     print(f"  Log        : {CONFIG['log_file']}")
