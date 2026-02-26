@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.5.3 - 26/02/2026"
+BOT_VERSION  = "v11.5.4 - 26/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -620,10 +620,21 @@ def calculate_confidence(mint):
             "active_signals": [], "blocked": True
         }
 
-    # BLOQUEIO 1b - negativo em 24h ou 1h - nao alerta moedas a cair
-    if p24h < 0 or p1h < 0:
+    # BLOQUEIO 1b - momentum negativo
+    # 24h tem de ser positivo, 5m tem de ser positivo, 1h so bloqueia se < -10%
+    if p24h < 0:
         return {"score": 0,
-                "signals": [f"Bloqueado - negativo (24h:{p24h:.1f}% 1h:{p1h:.1f}%)"],
+                "signals": [f"Bloqueado - 24h negativo ({p24h:.1f}%)"],
+                "verdict": "BLOQUEADO", "category": "FRACO",
+                "active_signals": [], "in_hot": in_hot, "blocked": True}
+    if p5m_raw <= 0:
+        return {"score": 0,
+                "signals": [f"Bloqueado - 5m negativo ou zero ({p5m_raw:.1f}%)"],
+                "verdict": "BLOQUEADO", "category": "FRACO",
+                "active_signals": [], "in_hot": in_hot, "blocked": True}
+    if p1h < -10:
+        return {"score": 0,
+                "signals": [f"Bloqueado - 1h em queda forte ({p1h:.1f}%)"],
                 "verdict": "BLOQUEADO", "category": "FRACO",
                 "active_signals": [], "in_hot": in_hot, "blocked": True}
 
