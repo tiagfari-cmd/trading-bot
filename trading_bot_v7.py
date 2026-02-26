@@ -283,6 +283,7 @@ SKIPPED_MAX    = 200  # mximo de moedas ignoradas em memria
 
 SKIP_CHECK_AFTER  = 3600  # verifica 1h depois se subiu
 
+
 # -- ESTADO DO BOT - snapshot para recuperao aps crash -----
 STATE_FILE       = f"{DATA_DIR}/bot_state.json"
 bot_start_time   = time.time()   # quando o bot arrancou esta sesso
@@ -1327,21 +1328,29 @@ async def check_and_learn(mint, check_data):
         print(f"  ??  Pesos ajustados: {changed}")
     print(f"{_sep}\n")
 
-    # Envia para #resultados se atingiu +100%
+    # Envia para #resultados se atingiu +20%
     if RESULTS_WEBHOOK_URL and "COLA" not in RESULTS_WEBHOOK_URL:
         _max_p = check_data.get("max_price", current_price)
         if current_price > _max_p: _max_p = current_price
         check_data["max_price"] = _max_p
         _max_g = (_max_p - alert_price) / alert_price if alert_price > 0 else 0
-        if _max_g >= 1.0 and not check_data.get("results_sent", False):
+        if _max_g >= 0.20 and not check_data.get("results_sent", False):
             check_data["results_sent"] = True
             _t = time.strftime("%H:%M", time.localtime(check_data["alert_time"]))
             try:
+                if _max_g >= 5.0:   r_emoji, r_color = "Rocket", 0xff6600
+                elif _max_g >= 2.0: r_emoji, r_color = "Diamante", 0x00ff88
+                elif _max_g >= 1.0: r_emoji, r_color = "Trofeu", 0x00ccff
+                elif _max_g >= 0.5: r_emoji, r_color = "Check", 0x88ff00
+                else:               r_emoji, r_color = "Subiu", 0xffd447
                 async with aiohttp.ClientSession() as _s:
                     await _s.post(RESULTS_WEBHOOK_URL, json={"embeds": [{
-                        "title": f"\U0001f3c6 {name}",
-                        "description": f"Alertado as **{_t}** | Pico: **+{_max_g*100:.0f}%**",
-                        "color": 0x00ff00,
+                        "title": f"{r_emoji} {name} | +{_max_g*100:.0f}%",
+                        "description": (
+                            f"Alertado as **{_t}** | Pico: **+{_max_g*100:.0f}%**\n"
+                            f"Preco alerta: `${alert_price:.8f}` | Pico: `${_max_p:.8f}`"
+                        ),
+                        "color": r_color,
                         "footer": {"text": f"Trading Bot {BOT_VERSION}"},
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }]}, timeout=aiohttp.ClientTimeout(total=5))
@@ -1839,20 +1848,7 @@ async def pumpfun_scanner():
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
                 await ws.send(json.dumps({"method": "subscribeTokenTrade"}))
 
-                # Avisa Discord quando reconecta (s se houve downtime real)
-                if ws_total_restarts > 1 and "COLA" not in DISCORD_WEBHOOK_URL:
-                    downtime_s = int(time.time() - last_connect_ok) if last_connect_ok else 0
-                    try:
-                        async with aiohttp.ClientSession() as s:
-                            await s.post(DISCORD_WEBHOOK_URL,
-                                json={"embeds": [{"title": "pump.fun reconectado",
-                                    "description": "Ligacao ao pump.fun restaurada. Bot a 100%.",
-                                    "color": 0x00ff88,
-                                    "footer": {"text": f"Trading Bot {BOT_VERSION}"},
-                                    "timestamp": datetime.now(timezone.utc).isoformat()
-                                }]},
-                                timeout=aiohttp.ClientTimeout(total=5))
-                    except Exception: pass
+                # pump.fun reconectado - sem notificacao (DexScreener e fonte primaria)
 
                 async for raw in ws:
                     ws_last_message = time.time()
@@ -1867,24 +1863,7 @@ async def pumpfun_scanner():
 
             print(f"[pump.fun] Falha #{ws_fail_streak} - {type(e).__name__} - reconectando em {reconnect_delay:.0f}s...")
 
-            now = time.time()
-            if downtime > 120 and "COLA" not in DISCORD_WEBHOOK_URL and now - last_discord_alert > 600:
-                last_discord_alert = now
-                try:
-                    async with aiohttp.ClientSession() as s:
-                        await s.post(DISCORD_WEBHOOK_URL,
-                            json={"embeds": [{"title": "WebSocket pump.fun em baixo",
-                                "description": (
-                                    "Sem ligacao ha **" + str(int(downtime/60)) + " min**. "
-                                    "Falhas: " + str(ws_fail_streak) + " | "
-                                    "Reinicio #" + str(ws_total_restarts)
-                                ),
-                                "color": 0xff4444,
-                                "footer": {"text": f"Trading Bot {BOT_VERSION}"},
-                                "timestamp": datetime.now(timezone.utc).isoformat()
-                            }]},
-                            timeout=aiohttp.ClientTimeout(total=5))
-                except Exception: pass
+            # pump.fun em baixo - sem notificacao (DexScreener continua ativo)
 
             await asyncio.sleep(reconnect_delay)
 
@@ -1957,7 +1936,7 @@ async def dexscreener_scanner():
         ("https://api.dexscreener.com/token-boosts/latest/v1",                  "boosted",  20, 20),
         ("https://api.dexscreener.com/latest/dex/search?q=solana&order=gainers","gainers",  20, 20),
         ("https://api.dexscreener.com/token-profiles/latest/v1",                "novos",    30, 20),
-        ("https://api.dexscreener.com/latest/dex/search?q=pump",                  "pump",     15, 30),
+        ("https://api.dexscreener.com/latest/dex/search?q=solana%20pump",          "pump",     15, 30),
         ("https://api.dexscreener.com/latest/dex/search?q=solana&order=volume",   "volume",   20, 30),
     ]
     last_fetch = {ep[0]: 0 for ep in endpoints}
