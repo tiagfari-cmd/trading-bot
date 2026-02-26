@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.5.5 - 26/02/2026"
+BOT_VERSION  = "v11.5.6 - 26/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -2448,6 +2448,8 @@ async def run_backtesting():
     ]
 
     for url, label, limit in endpoints:
+        raw   = None
+        pairs = []
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
@@ -2457,6 +2459,9 @@ async def run_backtesting():
                     raw = await r.json()
         except Exception as e:
             print(f"[Backtest] {label}: erro - {e}")
+            continue
+
+        if raw is None:
             continue
 
         # Normaliza resposta
@@ -2893,3 +2898,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         handle_shutdown(None, None)
+        
