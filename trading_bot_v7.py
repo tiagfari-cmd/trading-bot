@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.5.4 - 26/02/2026"
+BOT_VERSION  = "v11.5.5 - 26/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -1971,6 +1971,7 @@ async def dexscreener_scanner():
                         async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                             if r.status != 200: continue
                             data  = await r.json()
+                            pairs = []  # garante que pairs esta sempre definido
                             # token-profiles e token-boosts retornam lista direta
                             if isinstance(data, list):
                                 pairs = []
@@ -2632,10 +2633,10 @@ async def retroactive_learning():
     print("[RetroLearn] A buscar moedas que ja valorizaram no DexScreener...")
 
     urls = [
-        "https://api.dexscreener.com/latest/dex/search?q=solana&order=gainers",
-        "https://api.dexscreener.com/latest/dex/search?q=pump.fun&order=gainers",
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20memecoin",
-        "https://api.dexscreener.com/latest/dex/search?q=solana&order=volume",
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20pump&order=gainers",
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20meme&order=gainers",
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20coin&order=gainers",
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20inu&order=gainers",
     ]
 
     already_in = {p.get("name", "") for p in pattern_history}
