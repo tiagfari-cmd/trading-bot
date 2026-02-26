@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.5.1 - 26/02/2026"
+BOT_VERSION  = "v11.5.2 - 26/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -43,7 +43,7 @@ CONFIG = {
     "weights_file":    f"{DATA_DIR}/pesos.json",
     "check_after":        3600,   # aprende 1h depois
     "monitor_for":       86400,   # monitoriza por 24h (1 dia completo)
-    "success_threshold":   0.50,
+    "success_threshold":   1.00,  # sucesso = +100% (objetivo real)
     "update_interval":    1200,    # 20 minutos
     "dexscreener_poll":     30,    # polling DexScreener
     # Updates por milestone em vez de tempo fixo
@@ -620,6 +620,13 @@ def calculate_confidence(mint):
             "active_signals": [], "blocked": True
         }
 
+    # BLOQUEIO 1b - negativo em 24h ou 1h - nao alerta moedas a cair
+    if p24h < 0 or p1h < 0:
+        return {"score": 0,
+                "signals": [f"Bloqueado - negativo (24h:{p24h:.1f}% 1h:{p1h:.1f}%)"],
+                "verdict": "BLOQUEADO", "category": "FRACO",
+                "active_signals": [], "in_hot": in_hot, "blocked": True}
+
     # BLOQUEIO 2 - estagnada: 1h quase plana E 5m negativo ou zero
     if -5 <= p1h <= 5 and p5m <= 0:
         return {
@@ -749,7 +756,7 @@ def calculate_confidence(mint):
             p.get("hot") == in_hot
         )]
         if len(similar) >= 5:
-            wins_p  = sum(1 for p in similar if p.get("result",0) >= 0.5)
+            wins_p  = sum(1 for p in similar if p.get("result",0) >= 1.0)  # sucesso = +100%
             win_rate = wins_p / len(similar)
             avg_gain = sum(p.get("result",0) for p in similar) / len(similar)
             if win_rate >= 0.70:
