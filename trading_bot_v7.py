@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.5.6 - 26/02/2026"
+BOT_VERSION  = "v11.5.8 - 26/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -622,6 +622,7 @@ def calculate_confidence(mint):
 
     # BLOQUEIO 1b - momentum negativo
     # 24h tem de ser positivo, 5m tem de ser positivo, 1h so bloqueia se < -10%
+    p5m_raw = d.get("p5m", 0)  # definido aqui para uso nos bloqueios
     if p24h < 0:
         return {"score": 0,
                 "signals": [f"Bloqueado - 24h negativo ({p24h:.1f}%)"],
@@ -2442,9 +2443,10 @@ async def run_backtesting():
     # -- FONTES 2-4: DEXSCREENER ------------------------------
     # Endpoints diferentes para mxima variedade
     endpoints = [
-        ("https://api.dexscreener.com/token-boosts/top/v1",       "Top Boosts",   300),
-        ("https://api.dexscreener.com/token-boosts/latest/v1",    "Latest Boosts",200),
-        ("https://api.dexscreener.com/latest/dex/search?q=solana","Trending SOL", 200),
+        ("https://api.dexscreener.com/latest/dex/search?q=solana%20pump&order=gainers",   "Gainers Pump",  200),
+        ("https://api.dexscreener.com/latest/dex/search?q=solana%20meme&order=gainers",   "Gainers Meme",  200),
+        ("https://api.dexscreener.com/latest/dex/search?q=solana%20inu&order=gainers",    "Gainers Inu",   200),
+        ("https://api.dexscreener.com/latest/dex/search?q=solana&order=volume",           "Volume SOL",    200),
     ]
 
     for url, label, limit in endpoints:
@@ -2472,8 +2474,9 @@ async def run_backtesting():
         else:
             continue
 
-        # Filtra s Solana
+        # Filtra so Solana (aceita sem chainId - gainers ja filtram por solana)
         sol_pairs = [p for p in pairs if
+                     not p.get("chainId") or  # sem chainId = aceita
                      str(p.get("chainId","")).lower() == "solana" or
                      "pump" in str(p.get("pairAddress","")).lower() or
                      str(p.get("dexId","")).lower() in ("raydium","orca","pump.fun")][:limit]
@@ -2898,4 +2901,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         handle_shutdown(None, None)
-        
