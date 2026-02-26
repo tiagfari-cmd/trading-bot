@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.5.2 - 26/02/2026"
+BOT_VERSION  = "v11.5.3 - 26/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -2349,10 +2349,10 @@ async def run_backtesting():
     """
     global WEIGHTS, learns_done
 
-    print("[Backtest] ????????????????????????????????????")
+    print("[Backtest] ==========================================")
     print("[Backtest] A aprender com dados historicos...")
     print("[Backtest] Fontes: boosts + trending + novos + base historica")
-    print("[Backtest] ????????????????????????????????????")
+    print("[Backtest] ==========================================")
 
     already_in   = {p.get("name","") for p in pattern_history}
     new_patterns = 0
@@ -2591,15 +2591,15 @@ async def run_backtesting():
         save_weights(WEIGHTS)
         save_pattern_history()
         total_wins = sum(1 for p in pattern_history if p.get("success"))
-        print(f"[Backtest] ????????????????????????????????????")
-        print(f"[Backtest] ? CONCLUIDO!")
+        print(f"[Backtest] ==========================================")
+        print(f"[Backtest] CONCLUIDO!")
         print(f"[Backtest]    Total analisado : {total_seen} moedas")
         print(f"[Backtest]    Aprendizagens   : {new_patterns}")
         print(f"[Backtest]    Padroes guardados: {len(pattern_history)}")
-        print(f"[Backtest]    Rockets (>50%)  : {total_wins}")
+        print(f"[Backtest]    Rockets (>100%) : {total_wins}")
         print(f"[Backtest]    Falhas (<50%)   : {len(pattern_history)-total_wins}")
         print(f"[Backtest]    Temas em trend  : {len(successful_themes)}")
-        print(f"[Backtest] ????????????????????????????????????")
+        print(f"[Backtest] ==========================================")
     else:
         print(f"[Backtest] ? Ja tinha todos os padroes - {len(pattern_history)} no historico")
 
@@ -2659,6 +2659,9 @@ async def retroactive_learning():
                         p1h    = float(chg.get("h1")  or 0)
 
                         # Aprende com moedas que subiram pelo menos 100%
+                        # Fallback: se p24h nao disponivel, usa p6h ou p1h
+                        if p24h == 0 and p6h > 0: p24h = p6h * 4  # estima 24h a partir de 6h
+                        if p24h == 0 and p1h > 0: p24h = p1h * 24 # estima 24h a partir de 1h
                         if p24h < 100: continue
 
                         liq    = float((pair.get("liquidity") or {}).get("usd", 0) or 0)
