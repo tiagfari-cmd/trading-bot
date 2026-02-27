@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.6.7 - 27/02/2026"
+BOT_VERSION  = "v11.6.8 - 27/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -297,6 +297,7 @@ last_state_save  = 0             # ultimo snapshot de estado
 async def save_state_cloud():
     """Guarda estado no JSONBin - persiste entre deploys."""
     if not JSONBIN_KEY or not JSONBIN_ID: return
+    connector = aiohttp.TCPConnector(force_close=True)
     try:
         state = {
             "pattern_history": pattern_history[-500:],  # max 500 padroes
@@ -306,7 +307,7 @@ async def save_state_cloud():
             "alerts_sent":     alerts_sent,
             "saved_at":        time.time()
         }
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(connector=connector) as s:
             await s.put(
                 JSONBIN_URL,
                 json=state,
@@ -315,13 +316,16 @@ async def save_state_cloud():
             )
     except Exception as e:
         print(f"[JSONBin] Erro ao guardar: {e}")
+    finally:
+        await connector.close()
 
 async def load_state_cloud():
     """Carrega estado do JSONBin ao arrancar."""
     global pattern_history, WEIGHTS, alerted_tokens, learns_done, alerts_sent
     if not JSONBIN_KEY or not JSONBIN_ID: return False
+    connector = aiohttp.TCPConnector(force_close=True)
     try:
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(connector=connector) as s:
             async with s.get(
                 JSONBIN_URL,
                 headers={"X-Master-Key": JSONBIN_KEY},
@@ -346,6 +350,8 @@ async def load_state_cloud():
     except Exception as e:
         print(f"[JSONBin] Erro ao carregar: {e}")
         return False
+    finally:
+        await connector.close()
 
 def save_state():
     """Guarda estado critico em disco a cada 60s - recupera apos crash."""
@@ -2102,10 +2108,10 @@ async def dexscreener_scanner():
                             found = await _process_dex_pairs(pairs, "DexScreener/" + label)
                             if found > 0:
                                 print(f"[DexScreener/{label}] {found} novas moedas")
-                    except (ValueError, TypeError, KeyError):
+                    except (ValueError, TypeError, KeyError, NameError):
                         pass  # formato inesperado - ignora silenciosamente
                     except Exception as e:
-                        print(f"[DexScreener/{label}] Erro: {type(e).__name__}")
+                        print(f"[DexScreener/{label}] Erro: {type(e).__name__}: {e}")
         except Exception as e:
             print(f"[DexScreener] Erro: {e}")
         await asyncio.sleep(5)
