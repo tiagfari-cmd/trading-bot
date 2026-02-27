@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.6.8 - 27/02/2026"
+BOT_VERSION  = "v11.6.9 - 27/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -2754,12 +2754,16 @@ async def retroactive_learning():
     global WEIGHTS, learns_done
     print("[RetroLearn] A buscar moedas que ja valorizaram no DexScreener...")
 
-    # Estes endpoints devolvem pares com priceChange completo
+    # Endpoints que devolvem priceChange preenchido - trending e boosts
     urls = [
-        "https://api.dexscreener.com/latest/dex/search?q=solana",
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20pump",
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20meme",
-        "https://api.dexscreener.com/latest/dex/search?q=sol%20coin",
+        "https://api.dexscreener.com/latest/dex/search?q=solana",           # trending geral
+        "https://api.dexscreener.com/latest/dex/search?q=pump%20fun",       # pump.fun tokens
+        "https://api.dexscreener.com/latest/dex/search?q=raydium%20solana", # raydium tokens
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20token",   # tokens gerais
+        "https://api.dexscreener.com/latest/dex/search?q=sol%20meme",       # memecoins
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20doge",    # dog theme
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20cat",     # cat theme
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20pepe",    # pepe theme
     ]
 
     already_in = {p.get("name", "") for p in pattern_history}
@@ -2778,7 +2782,7 @@ async def retroactive_learning():
                 pairs = data if isinstance(data, list) else data.get("pairs", [])
                 if not pairs: continue
 
-                for pair in pairs[:50]:
+                for pair in pairs[:100]:
                     try:
                         # Filtra so Solana
                         chain = pair.get("chainId", "solana")
@@ -2797,6 +2801,7 @@ async def retroactive_learning():
                         if p24h == 0 and p6h > 0: p24h = p6h * 4
                         if p24h == 0 and p1h > 0: p24h = p1h * 24
                         if p24h < 100: continue
+                        # So chega aqui se p24h >= 100%
 
                         liq    = float((pair.get("liquidity") or {}).get("usd", 0) or 0)
                         mcap   = float(pair.get("marketCap", 0) or 0)
@@ -2844,7 +2849,10 @@ async def retroactive_learning():
                         continue
 
         save_pattern_history()
-        print(f"[RetroLearn] {learned} moedas aprendidas | Total padroes: {len(pattern_history)}")
+        if learned > 0:
+            print(f"[RetroLearn] {learned} moedas aprendidas | Total padroes: {len(pattern_history)}")
+        else:
+            print(f"[RetroLearn] 0 moedas com p24h>=100% encontradas | Total padroes: {len(pattern_history)}")
 
     except Exception as e:
         print(f"[RetroLearn] Erro: {e}")
