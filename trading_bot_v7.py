@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.5.9 - 27/02/2026"
+BOT_VERSION  = "v11.6.0 - 27/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -288,6 +288,59 @@ SKIP_CHECK_AFTER  = 3600  # verifica 1h depois se subiu
 STATE_FILE       = f"{DATA_DIR}/bot_state.json"
 bot_start_time   = time.time()   # quando o bot arrancou esta sesso
 last_state_save  = 0             # ultimo snapshot de estado
+
+async def save_state_cloud():
+    """Guarda estado no JSONBin - persiste entre deploys."""
+    if not JSONBIN_KEY or not JSONBIN_ID: return
+    try:
+        state = {
+            "pattern_history": pattern_history[-500:],  # max 500 padroes
+            "weights":         WEIGHTS,
+            "alerted_tokens":  list(alerted_tokens)[-200:],
+            "learns_done":     learns_done,
+            "alerts_sent":     alerts_sent,
+            "saved_at":        time.time()
+        }
+        async with aiohttp.ClientSession() as s:
+            await s.put(
+                JSONBIN_URL,
+                json=state,
+                headers={"X-Master-Key": JSONBIN_KEY, "Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+    except Exception as e:
+        print(f"[JSONBin] Erro ao guardar: {e}")
+
+async def load_state_cloud():
+    """Carrega estado do JSONBin ao arrancar."""
+    global pattern_history, WEIGHTS, alerted_tokens, learns_done, alerts_sent
+    if not JSONBIN_KEY or not JSONBIN_ID: return False
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                JSONBIN_URL,
+                headers={"X-Master-Key": JSONBIN_KEY},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as r:
+                if r.status != 200: return False
+                data = (await r.json()).get("record", {})
+                if not data or data.get("state") == "init": return False
+
+                if data.get("pattern_history"):
+                    pattern_history = data["pattern_history"]
+                if data.get("weights"):
+                    WEIGHTS = data["weights"]
+                if data.get("alerted_tokens"):
+                    alerted_tokens.update(data["alerted_tokens"])
+                if data.get("learns_done"):
+                    learns_done  = data["learns_done"]
+                if data.get("alerts_sent"):
+                    alerts_sent  = data["alerts_sent"]
+                print(f"[JSONBin] Estado carregado: {len(pattern_history)} padroes, {learns_done} aprendizagens")
+                return True
+    except Exception as e:
+        print(f"[JSONBin] Erro ao carregar: {e}")
+        return False
 
 def save_state():
     """Guarda estado critico em disco a cada 60s - recupera apos crash."""
@@ -2628,6 +2681,10 @@ async def run_backtesting():
 #   MAINTENANCE
 # ---------------------------------------------
 
+JSONBIN_KEY     = os.environ.get("JSONBIN_KEY", "")
+JSONBIN_ID      = os.environ.get("JSONBIN_ID", "")
+JSONBIN_URL     = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}"
+
 LAST_BACKTEST   = 0  # timestamp do ultimo backtesting periodico
 LAST_RETROLEARN = 0  # timestamp do ultimo retroactive learning
 
@@ -2772,9 +2829,13 @@ async def maintenance_loop():
                     holder_timeline.pop(mint, None)
             recent_rockets[:] = [r for r in recent_rockets if now - r["time"] < 14400]
 
-        # Guarda estado a cada 60s - recupera aps crash
+        # Guarda estado a cada 60s - recupera apos crash
         if int(now) % 60 < 31:
             save_state()
+
+        # Guarda estado na cloud a cada 5 min - persiste entre deploys
+        if int(now) % 300 < 31:
+            await save_state_cloud()
 
         # Status a cada 5 min
         if int(now) % 300 < 31:
@@ -2811,6 +2872,11 @@ async def main():
     print(f"  Discord    : {'? configurado' if 'COLA' not in DISCORD_WEBHOOK_URL else '??  nao configurado'}")
     print(f"  Log        : {CONFIG['log_file']}")
     print("=" * 60 + "\n")
+
+    # -- CARREGA ESTADO DA CLOUD (JSONBin) --------------------
+    cloud_loaded = await load_state_cloud()
+    if cloud_loaded:
+        print(f"[JSONBin] Estado cloud carregado: {len(pattern_history)} padroes, {learns_done} aprendizagens")
 
     # -- DETEO DE CRASH - verifica se houve downtime ----------
     last_state = load_last_state()
