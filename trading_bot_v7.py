@@ -1,5 +1,5 @@
 # Trading Bot v11.5 - Auto-Scanner Solana
-# Filtros: MCap $80K-$500K | Liq $12K-$70K | Vol>5%
+# Filtros: MCap $80K-$1M | Liq $12K-$70K | Vol>5%
 
 
 import asyncio, csv, json, os, time, aiohttp, websockets
@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.6.2 - 27/02/2026"
+BOT_VERSION  = "v11.6.4 - 27/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -55,7 +55,7 @@ CONFIG = {
 
     # -- NOVOS FILTROS v7 (baseados nos prints do GEM HUNTERS) --
     "mcap_min":        80_000,   # Market Cap mnimo $80K (protege Lupe $96K que fez +120%)
-    "mcap_max":       500_000,   # Market Cap mximo $500K
+    "mcap_max":       1_000_000, # Market Cap maximo $1M
     "liq_min":         12_000,   # Liquidez mnima $12K (baixado para apanhar moedas cedo)
     "liq_max":         70_000,   # Liquidez mxima $70K
     "vol_ratio_min":    0.05,    # Vol1H/Vol24H mnimo 5% (baixado para apanhar mais moedas)
@@ -78,6 +78,8 @@ DEFAULT_WEIGHTS = {
     "price_rise":      20.0,
     "price_fall_pen": -20.0,  # aumentado - queda de preo  sinal muito negativo
     "trade_freq":      10.0,
+    "pair_new":        10.0,
+    "viral_theme":     15.0,
     # v7 - filtros mercado
     "mcap_good":       20.0,
     "mcap_bad":       -20.0,
@@ -417,6 +419,7 @@ pattern_history = load_pattern_history()  # carrega DEPOIS de definir a funo
 
 # -- CORRELAO DE TEMAS -------------------------------
 successful_themes = {}  # tema -> {count_success, count_total, avg_gain}
+viral_themes = {}      # tema -> {timestamp, max_gain, count} - temas com +500% recentes
 THEME_KEYWORDS = [
     ["moon","luna","lunar"],["dog","doge","doggo","shiba"],
     ["cat","kitty","meow","nyan"],["frog","pepe","kek"],
@@ -684,9 +687,10 @@ def calculate_confidence(mint):
                 "signals": [f"Bloqueado - 24h negativo ({p24h:.1f}%)"],
                 "verdict": "BLOQUEADO", "category": "FRACO",
                 "active_signals": [], "in_hot": in_hot, "blocked": True}
-    if p5m_raw <= 0:
+    # 5m: bloqueia se queda > -3% - atividade importa mais que direcao
+    if p5m_raw < -3:
         return {"score": 0,
-                "signals": [f"Bloqueado - 5m negativo ou zero ({p5m_raw:.1f}%)"],
+                "signals": [f"Bloqueado - 5m em queda ({p5m_raw:.1f}%)"],
                 "verdict": "BLOQUEADO", "category": "FRACO",
                 "active_signals": [], "in_hot": in_hot, "blocked": True}
     if p1h < -10:
@@ -1032,6 +1036,30 @@ def calculate_confidence(mint):
     elif score >= 55:             cat, v = "BOM",    "✅ BOM SINAL - potencial moderado"
     elif score >= 35:             cat, v = "FRACO",  "? FRACO - ignorado"
     else:                         cat, v = "FRACO",  "? SEM SINAL"
+    # VIRAL THEME BONUS - tema com +500% nas ultimas 6h
+    token_theme = detect_theme(d.get("name", ""))
+    if token_theme and token_theme in viral_themes:
+        vt = viral_themes[token_theme]
+        hours_since_viral = (time.time() - vt["timestamp"]) / 3600
+        if hours_since_viral < 6:
+            pts = int(w.get("viral_theme", 15))
+            score += pts
+            signals.append(f"Tema '{token_theme}' VIRAL (+{vt['max_gain']:.0f}% recente) (+{pts}pts)")
+            active.append("viral_theme")
+
+    # PAIR AGE BONUS - par recente tem mais potencial
+    pair_age = d.get("pair_age_hours", 999)
+    if pair_age < 6:
+        pts = int(w.get("pair_new", 10))
+        score += pts
+        signals.append(f"Par muito recente ({pair_age:.1f}h) (+{pts}pts)")
+        active.append("pair_new")
+    elif pair_age < 24:
+        pts = int(w.get("pair_new", 10)) // 2
+        score += pts
+        signals.append(f"Par recente ({pair_age:.1f}h) (+{pts}pts)")
+        active.append("pair_new")
+
     return {"score": score, "signals": signals, "verdict": v, "category": cat,
             "active_signals": active, "blocked": False}
 
@@ -1317,6 +1345,18 @@ async def check_and_learn(mint, check_data):
     hours_since = (time.time() - check_data.get("alert_time", time.time())) / 3600
     if hours_since <= 2 and change >= 0.50:
         change_w = change * 1.5   # exploso na primeira 1h - aprende agressivamente
+
+        # Marca tema como viral se subiu +500%
+        if change >= 5.0:  # +500%
+            theme = detect_theme(name)
+            if theme:
+                if theme not in viral_themes:
+                    viral_themes[theme] = {"timestamp": time.time(), "max_gain": change * 100, "count": 1}
+                else:
+                    viral_themes[theme]["max_gain"] = max(viral_themes[theme]["max_gain"], change * 100)
+                    viral_themes[theme]["count"] += 1
+                    viral_themes[theme]["timestamp"] = time.time()
+                print(f"[ViralTema] Tema '{theme}' marcado como viral! +{change*100:.0f}%")
         print(f"[Aprendizagem] ? Explosao rapida ({hours_since:.1f}h) - peso x1.5")
     elif hours_since <= 6 and change >= 1.0:
         change_w = change * 1.2   # exploso at 6h - ainda muito bom
@@ -1996,6 +2036,11 @@ async def _process_dex_pairs(pairs, source):
         d["symbol"]     = p.get("baseToken", {}).get("symbol", d.get("symbol","?"))
         price = float(p.get("priceUsd") or 0)
         if price > 0: d["prices"].append(price)
+        # Guarda idade do par (em horas)
+        pair_created = p.get("pairCreatedAt")
+        if pair_created:
+            age_hours = (time.time() - pair_created / 1000) / 3600
+            d["pair_age_hours"] = age_hours
         msg = {"mint": mint, "name": d["name"], "symbol": d["symbol"]}
         await process_trade(msg, source=source)
         count += 1
@@ -2755,7 +2800,7 @@ async def retroactive_learning():
 
                         if hot_hora:              sigs.append("hot_window")
                         if mcap < 200000:         sigs.append("price_low")
-                        if 80000 <= mcap <= 500000: sigs.append("mcap_good")
+                        if 80000 <= mcap <= 1000000: sigs.append("mcap_good")
                         if liq >= 12000:          sigs.append("liq_good")
                         if vr >= 0.10:            sigs.append("vol_ratio_good")
                         if vr >= 0.30:            sigs.append("volume_spike")
@@ -2830,6 +2875,13 @@ async def maintenance_loop():
                     holder_timeline.pop(mint, None)
             recent_rockets[:] = [r for r in recent_rockets if now - r["time"] < 14400]
 
+        # Limpa temas virais com mais de 6h
+        now_vt = time.time()
+        for t in list(viral_themes.keys()):
+            if now_vt - viral_themes[t]["timestamp"] > 21600:  # 6h
+                del viral_themes[t]
+                print(f"[ViralTema] Tema '{t}' expirou")
+
         # Guarda estado a cada 60s - recupera apos crash
         if int(now) % 60 < 31:
             save_state()
@@ -2865,7 +2917,7 @@ async def main():
     print(f"  Data dir: {DATA_DIR}")
     print("  pump.fun + DexScreener | Auto-scanner | Auto-aprende")
     print("=" * 60)
-    print(f"  Filtros    : MCap $100K-$500K | Liq $12K-$70K | Vol1H>5% ou Vol>$50K abs")
+    print(f"  Filtros    : MCap $100K-$1M | Liq $12K-$70K | Vol1H>5% ou Vol>$50K abs")
     print(f"  Categoria  : so ROCKET e BOM (+50% potencial)")
     print(f"  Updates    : a cada 20 minutos por moeda alertada")
     print(f"  Aprende    : verifica resultado 1h apos cada alerta")
@@ -2923,7 +2975,7 @@ async def main():
     if "COLA" not in DISCORD_WEBHOOK_URL:
         startup_embed = {
             "title":       f"[BOT] Bot Arrancou - {BOT_VERSION}",
-            "description": "Nova sessao iniciada! | DexScreener primario | MCap $80K-$500K | Liq $12K-$70K | Vol>5%",
+            "description": "Nova sessao iniciada! | DexScreener primario | MCap $80K-$1M | Liq $12K-$70K | Vol>5%",
             "color": 0x00ff88,
             "footer": {"text": f"Trading Bot {BOT_VERSION}"},
             "timestamp": datetime.now(timezone.utc).isoformat()
