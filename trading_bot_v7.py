@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.6.5 - 27/02/2026"
+BOT_VERSION  = "v11.6.7 - 27/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -563,7 +563,11 @@ def check_mcap_liq_vol(mint) -> tuple:
             if mcap > 800_000:
                 passed = False  # bloqueia completamente acima de $800K
         else:
-            signals.append(f"?? Market Cap ${mcap/1000:.0f}K - muito baixo (cuidado)")
+            # MCap abaixo do minimo - bloqueia
+            return {"score": 0,
+                    "signals": [f"Bloqueado - MCap ${mcap/1000:.0f}K abaixo do minimo $80K"],
+                    "verdict": "BLOQUEADO", "category": "FRACO",
+                    "active_signals": [], "in_hot": in_hot, "blocked": True}
 
     # -- LIQUIDITY -------------------------------
     # Bloqueia moedas sem liquidez ou demasiado baixa ($2K nao chega para mover nada)
@@ -1528,7 +1532,7 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
     bsr_line = ""
 
     embed = {
-        "title":       f"{icon} {cat} - {d.get('name','?')} | {d.get('symbol','?')}",
+        "title":       f"{icon} - {d.get('name','?')} | {d.get('symbol','?')}",
         "description": (
             f"Preco: `${price:.8f}`  Score: {analysis['score']}%  Janela: {janela}\n"
             f"MCap: {mcap_str}  Liq: {liq_str}  Var: {ratio}"
