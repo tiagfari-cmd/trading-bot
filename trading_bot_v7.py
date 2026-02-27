@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.6.1 - 27/02/2026"
+BOT_VERSION  = "v11.6.2 - 27/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -2691,18 +2691,20 @@ LAST_RETROLEARN = 0  # timestamp do ultimo retroactive learning
 
 async def retroactive_learning():
     """
-    Vai buscar ao DexScreener moedas que ja subiram muito (+300% em 24h)
+    Vai buscar ao DexScreener moedas que ja subiram muito (+100% em 24h)
     e aprende com o que tinham em comum no momento do pump.
     Corre a cada 3 horas para aprender com centenas de casos reais.
+    Usa o endpoint de trending que tem priceChange preenchido.
     """
     global WEIGHTS, learns_done
     print("[RetroLearn] A buscar moedas que ja valorizaram no DexScreener...")
 
+    # Estes endpoints devolvem pares com priceChange completo
     urls = [
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20pump&order=gainers",
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20meme&order=gainers",
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20coin&order=gainers",
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20inu&order=gainers",
+        "https://api.dexscreener.com/latest/dex/search?q=solana",
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20pump",
+        "https://api.dexscreener.com/latest/dex/search?q=solana%20meme",
+        "https://api.dexscreener.com/latest/dex/search?q=sol%20coin",
     ]
 
     already_in = {p.get("name", "") for p in pattern_history}
@@ -2737,10 +2739,8 @@ async def retroactive_learning():
                         p1h    = float(chg.get("h1")  or 0)
 
                         # Aprende com moedas que subiram pelo menos 100%
-                        # Fallback: se p24h nao disponivel, usa p6h ou p1h
                         if p24h == 0 and p6h > 0: p24h = p6h * 4
                         if p24h == 0 and p1h > 0: p24h = p1h * 24
-                        if p24h == 0 and liq > 20000 and mcap > 50000: p24h = 150  # tem liq/mcap = provavelmente subiu
                         if p24h < 100: continue
 
                         liq    = float((pair.get("liquidity") or {}).get("usd", 0) or 0)
