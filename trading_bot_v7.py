@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.5.8 - 26/02/2026"
+BOT_VERSION  = "v11.5.9 - 27/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -2628,7 +2628,8 @@ async def run_backtesting():
 #   MAINTENANCE
 # ---------------------------------------------
 
-LAST_BACKTEST = 0  # timestamp do ultimo backtesting periodico
+LAST_BACKTEST   = 0  # timestamp do ultimo backtesting periodico
+LAST_RETROLEARN = 0  # timestamp do ultimo retroactive learning
 
 
 async def retroactive_learning():
@@ -2736,7 +2737,7 @@ async def retroactive_learning():
         print(f"[RetroLearn] Erro: {e}")
 
 async def maintenance_loop():
-    global LAST_BACKTEST
+    global LAST_BACKTEST, LAST_RETROLEARN
     while True:
         await asyncio.sleep(30)
         now = time.time()
@@ -2760,7 +2761,8 @@ async def maintenance_loop():
             await run_backtesting()
 
         # Aprendizagem retroativa a cada 3 horas - busca moedas que ja valorizaram
-        if int(now) % 10800 < 31:
+        if now - LAST_RETROLEARN >= 10800:
+            LAST_RETROLEARN = now
             await retroactive_learning()
 
         # Limpa holder_timeline e rockets antigos a cada 10 min
