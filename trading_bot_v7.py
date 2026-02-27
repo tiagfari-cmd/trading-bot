@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.6.4 - 27/02/2026"
+BOT_VERSION  = "v11.6.5 - 27/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -2886,8 +2886,8 @@ async def maintenance_loop():
         if int(now) % 60 < 31:
             save_state()
 
-        # Guarda estado na cloud a cada 5 min - persiste entre deploys
-        if int(now) % 300 < 31:
+        # Guarda estado na cloud a cada 60s - persiste entre deploys
+        if int(now) % 60 < 31:
             await save_state_cloud()
 
         # Status a cada 5 min
@@ -2991,6 +2991,7 @@ async def main():
     # Corre backtesting antes de tudo
     await run_backtesting()
     await retroactive_learning()  # aprende com moedas que ja valorizaram
+    await save_state_cloud()      # guarda imediatamente apos backtest
 
     await asyncio.gather(
         pumpfun_scanner(),
