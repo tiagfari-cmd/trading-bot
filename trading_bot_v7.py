@@ -15,6 +15,9 @@ BOT_VERSION  = "v11.6.0 - 27/02/2026"
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
 RESULTS_WEBHOOK_URL = os.environ.get("RESULTS_WEBHOOK_URL", "")  # canal #resultados
+JSONBIN_KEY         = os.environ.get("JSONBIN_KEY", "")            # JSONBin X-Master-Key
+JSONBIN_ID          = os.environ.get("JSONBIN_ID", "")             # JSONBin Bin ID
+JSONBIN_URL         = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}"  # URL do bin
 HELIUS_API_KEY      = os.environ.get("HELIUS_API_KEY", "COLA_AQUI_A_TUA_HELIUS_KEY")
 
 # -- RAILWAY API - para guardar aprendizagem como varivel de ambiente --
@@ -2681,9 +2684,6 @@ async def run_backtesting():
 #   MAINTENANCE
 # ---------------------------------------------
 
-JSONBIN_KEY     = os.environ.get("JSONBIN_KEY", "")
-JSONBIN_ID      = os.environ.get("JSONBIN_ID", "")
-JSONBIN_URL     = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}"
 
 LAST_BACKTEST   = 0  # timestamp do ultimo backtesting periodico
 LAST_RETROLEARN = 0  # timestamp do ultimo retroactive learning
