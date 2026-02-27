@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.6.0 - 27/02/2026"
+BOT_VERSION  = "v11.6.1 - 27/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -2738,8 +2738,9 @@ async def retroactive_learning():
 
                         # Aprende com moedas que subiram pelo menos 100%
                         # Fallback: se p24h nao disponivel, usa p6h ou p1h
-                        if p24h == 0 and p6h > 0: p24h = p6h * 4  # estima 24h a partir de 6h
-                        if p24h == 0 and p1h > 0: p24h = p1h * 24 # estima 24h a partir de 1h
+                        if p24h == 0 and p6h > 0: p24h = p6h * 4
+                        if p24h == 0 and p1h > 0: p24h = p1h * 24
+                        if p24h == 0 and liq > 20000 and mcap > 50000: p24h = 150  # tem liq/mcap = provavelmente subiu
                         if p24h < 100: continue
 
                         liq    = float((pair.get("liquidity") or {}).get("usd", 0) or 0)
@@ -2859,7 +2860,7 @@ async def maintenance_loop():
 
 async def main():
     print("=" * 60)
-    print("  ? TRADING BOT {BOT_VERSION}")
+    print(f"  TRADING BOT {BOT_VERSION}")
     print(f"  Railway: {'?' if os.environ.get('RAILWAY_ENVIRONMENT') else '? local'}")
     print(f"  Data dir: {DATA_DIR}")
     print("  pump.fun + DexScreener | Auto-scanner | Auto-aprende")
