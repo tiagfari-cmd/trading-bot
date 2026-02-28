@@ -10,7 +10,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.6.9 - 27/02/2026"
+BOT_VERSION  = "v11.7.0 - 27/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -2062,11 +2062,11 @@ async def dexscreener_scanner():
 
     # (url, label, intervalo_segundos, limite_pares)
     endpoints = [
-        ("https://api.dexscreener.com/latest/dex/search?q=solana",              "trending", 15, 30),
+        ("https://api.dexscreener.com/latest/dex/pairs/solana/pump",            "trending", 15, 30),
         ("https://api.dexscreener.com/token-boosts/latest/v1",                  "boosted",  20, 20),
         ("https://api.dexscreener.com/latest/dex/search?q=solana&order=gainers","gainers",  20, 20),
         ("https://api.dexscreener.com/token-profiles/latest/v1",                "novos",    30, 20),
-        ("https://api.dexscreener.com/latest/dex/search?q=solana%20pump",          "pump",     15, 30),
+        ("https://api.dexscreener.com/latest/dex/tokens/v1/solana",                "pump",     15, 50),
         ("https://api.dexscreener.com/latest/dex/search?q=solana&order=volume",   "volume",   20, 30),
     ]
     last_fetch = {ep[0]: 0 for ep in endpoints}
