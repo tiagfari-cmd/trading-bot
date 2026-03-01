@@ -3,6 +3,7 @@
 
 
 import asyncio, csv, json, os, time, aiohttp, websockets
+from aiohttp import web
 from datetime import datetime, timezone
 from collections import deque
 
@@ -10,7 +11,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.7.0 - 27/02/2026"
+BOT_VERSION  = "v11.7.3 - 28/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -1453,13 +1454,13 @@ async def check_and_learn(mint, check_data):
         print(f"  ??  Pesos ajustados: {changed}")
     print(f"{_sep}\n")
 
-    # Envia para #resultados se atingiu +20%
+    # Envia para #resultados se atingiu +50%
     if RESULTS_WEBHOOK_URL and "COLA" not in RESULTS_WEBHOOK_URL:
         _max_p = check_data.get("max_price", current_price)
         if current_price > _max_p: _max_p = current_price
         check_data["max_price"] = _max_p
         _max_g = (_max_p - alert_price) / alert_price if alert_price > 0 else 0
-        if _max_g >= 0.20 and not check_data.get("results_sent", False):
+        if _max_g >= 0.50 and not check_data.get("results_sent", False):
             check_data["results_sent"] = True
             _t = time.strftime("%H:%M", time.localtime(check_data["alert_time"]))
             try:
@@ -1868,7 +1869,7 @@ async def process_trade(msg, source="pump.fun"):
 
     # -- GUARDA MOEDAS IGNORADAS para aprender com oportunidades perdidas --
     hot_now_skip = is_hot_window()
-    min_score_skip = CONFIG["min_confidence"] if hot_now_skip else CONFIG["min_confidence"] + 10
+    min_score_skip = CONFIG["min_confidence"] if hot_now_skip else CONFIG["min_confidence"] + 5
     if (cat not in CONFIG["min_category"] or
             analysis["score"] < min_score_skip or
             analysis.get("blocked", False)):
@@ -1890,7 +1891,7 @@ async def process_trade(msg, source="pump.fun"):
     hot_now    = is_hot_window()
     # Fora da janela exige score mais alto (mercado mais fraco de dia)
     # +12 fora janela para compensar filtro de liquidez mais baixo
-    min_score  = CONFIG["min_confidence"] if hot_now else CONFIG["min_confidence"] + 12
+    min_score  = CONFIG["min_confidence"] if hot_now else CONFIG["min_confidence"] + 5
 
     qualifies = (cat in CONFIG["min_category"] and
                  analysis["score"] >= min_score and
@@ -2928,6 +2929,21 @@ async def maintenance_loop():
 #   MAIN
 # ---------------------------------------------
 
+async def keepalive_server():
+    """Servidor HTTP minimo para manter o bot ativo no Railway."""
+    async def health(request):
+        return web.Response(text=f"OK - Trading Bot {BOT_VERSION} | Alertas: {alerts_sent} | Padroes: {len(pattern_history)}")
+
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"[KeepAlive] Servidor HTTP ativo na porta {port}")
+
 async def main():
     print("=" * 60)
     print(f"  TRADING BOT {BOT_VERSION}")
@@ -3012,6 +3028,7 @@ async def main():
     await save_state_cloud()      # guarda imediatamente apos backtest
 
     await asyncio.gather(
+        keepalive_server(),
         pumpfun_scanner(),
         pumpfun_watchdog(),
         dexscreener_scanner(),
