@@ -11,7 +11,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.7.5 - 28/02/2026"
+BOT_VERSION  = "v11.7.6 - 28/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -2743,34 +2743,31 @@ LAST_RETROLEARN = 0  # timestamp do ultimo retroactive learning
 
 async def retroactive_learning():
     """
-    Vai buscar ao DexScreener moedas que ja subiram muito (+100% em 24h)
-    e aprende com o que tinham em comum no momento do pump.
-    Corre a cada 3 horas para aprender com centenas de casos reais.
-    Usa o endpoint de trending que tem priceChange preenchido.
+    Aprende com tokens que o bot ja viu e que agora tem p24h >= 100%.
+    Usa o endpoint /tokens/{address} que devolve priceChange completo.
+    Corre a cada 3 horas.
     """
     global WEIGHTS, learns_done
-    print("[RetroLearn] A buscar moedas que ja valorizaram no DexScreener...")
-
-    # Endpoints que devolvem priceChange preenchido - trending e boosts
-    urls = [
-        "https://api.dexscreener.com/latest/dex/search?q=solana",           # trending geral
-        "https://api.dexscreener.com/latest/dex/search?q=pump%20fun",       # pump.fun tokens
-        "https://api.dexscreener.com/latest/dex/search?q=raydium%20solana", # raydium tokens
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20token",   # tokens gerais
-        "https://api.dexscreener.com/latest/dex/search?q=sol%20meme",       # memecoins
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20doge",    # dog theme
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20cat",     # cat theme
-        "https://api.dexscreener.com/latest/dex/search?q=solana%20pepe",    # pepe theme
-    ]
+    print("[RetroLearn] A verificar tokens conhecidos que ja valorizaram...")
 
     already_in = {p.get("name", "") for p in pattern_history}
     learned = 0
 
+    # Usa os tokens que o bot ja viu no token_data
+    candidates = list(token_data.keys())[:150]
+    if not candidates:
+        print(f"[RetroLearn] Sem tokens para verificar ainda | Total padroes: {len(pattern_history)}")
+        return
+
     try:
-        async with aiohttp.ClientSession() as session:
-            for url in urls:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), connector_owner=True) as session:
+            # Processa em batches de 30 addresses por request
+            for i in range(0, len(candidates), 30):
+                batch = candidates[i:i+30]
+                addresses = "%2C".join(batch)
+                url = f"https://api.dexscreener.com/latest/dex/tokens/{addresses}"
                 try:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
                         if r.status != 200: continue
                         data = await r.json()
                 except Exception:
@@ -2779,9 +2776,8 @@ async def retroactive_learning():
                 pairs = data if isinstance(data, list) else data.get("pairs", [])
                 if not pairs: continue
 
-                for pair in pairs[:100]:
+                for pair in pairs:
                     try:
-                        # Filtra so Solana
                         chain = pair.get("chainId", "solana")
                         if chain and chain != "solana": continue
 
