@@ -11,7 +11,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.7.4 - 28/02/2026"
+BOT_VERSION  = "v11.7.5 - 28/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -2901,8 +2901,8 @@ async def maintenance_loop():
         if int(now) % 60 < 31:
             save_state()
 
-        # Guarda estado na cloud a cada 60s - persiste entre deploys
-        if int(now) % 60 < 31:
+        # Guarda estado na cloud a cada 5 min - persiste entre deploys (~8.600 requests/mes)
+        if int(now) % 300 < 31:
             await save_state_cloud()
 
         # Status a cada 5 min
