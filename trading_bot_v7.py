@@ -1,5 +1,5 @@
-# Trading Bot v11.5 - Auto-Scanner Solana
-# Filtros: MCap $80K-$1M | Liq $12K-$70K | Vol>5%
+# Trading Bot v11.7.3 - Auto-Scanner Solana
+# Filtros: MCap $80K-$1M | Liq $12K-$70K | Vol>5% | JSONBin | KeepAlive
 
 
 import asyncio, csv, json, os, time, aiohttp, websockets
@@ -11,7 +11,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.7.3 - 28/02/2026"
+BOT_VERSION  = "v11.7.4 - 28/02/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -298,35 +298,33 @@ last_state_save  = 0             # ultimo snapshot de estado
 async def save_state_cloud():
     """Guarda estado no JSONBin - persiste entre deploys."""
     if not JSONBIN_KEY or not JSONBIN_ID: return
-    connector = aiohttp.TCPConnector(force_close=True)
     try:
         state = {
-            "pattern_history": pattern_history[-500:],  # max 500 padroes
+            "pattern_history": pattern_history[-500:],
             "weights":         WEIGHTS,
             "alerted_tokens":  list(alerted_tokens)[-200:],
             "learns_done":     learns_done,
             "alerts_sent":     alerts_sent,
             "saved_at":        time.time()
         }
-        async with aiohttp.ClientSession(connector=connector) as s:
-            await s.put(
+        conn = aiohttp.TCPConnector(ssl=False) if False else aiohttp.TCPConnector()
+        async with aiohttp.ClientSession(connector=conn, connector_owner=True) as s:
+            async with s.put(
                 JSONBIN_URL,
                 json=state,
                 headers={"X-Master-Key": JSONBIN_KEY, "Content-Type": "application/json"},
                 timeout=aiohttp.ClientTimeout(total=10)
-            )
+            ) as r:
+                await r.read()  # consome a resposta para fechar a conexao
     except Exception as e:
         print(f"[JSONBin] Erro ao guardar: {e}")
-    finally:
-        await connector.close()
 
 async def load_state_cloud():
     """Carrega estado do JSONBin ao arrancar."""
     global pattern_history, WEIGHTS, alerted_tokens, learns_done, alerts_sent
     if not JSONBIN_KEY or not JSONBIN_ID: return False
-    connector = aiohttp.TCPConnector(force_close=True)
     try:
-        async with aiohttp.ClientSession(connector=connector) as s:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), connector_owner=True) as s:
             async with s.get(
                 JSONBIN_URL,
                 headers={"X-Master-Key": JSONBIN_KEY},
@@ -351,8 +349,6 @@ async def load_state_cloud():
     except Exception as e:
         print(f"[JSONBin] Erro ao carregar: {e}")
         return False
-    finally:
-        await connector.close()
 
 def save_state():
     """Guarda estado critico em disco a cada 60s - recupera apos crash."""
