@@ -11,7 +11,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.7.6 - 28/02/2026"
+BOT_VERSION  = "v11.8.2 - 01/03/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -81,6 +81,8 @@ DEFAULT_WEIGHTS = {
     "trade_freq":      10.0,
     "pair_new":        10.0,
     "viral_theme":     15.0,
+    "vol24h_high":     12.0,
+    "vol1h_equals_vol24h": 15.0,
     # v7 - filtros mercado
     "mcap_good":       20.0,
     "mcap_bad":       -20.0,
@@ -694,10 +696,11 @@ def calculate_confidence(mint):
                 "signals": [f"Bloqueado - 24h negativo ({p24h:.1f}%)"],
                 "verdict": "BLOQUEADO", "category": "FRACO",
                 "active_signals": [], "in_hot": in_hot, "blocked": True}
-    # 5m: bloqueia se queda > -3% - atividade importa mais que direcao
-    if p5m_raw < -3:
+    # 5m: penaliza no score em vez de bloquear - bot aprende com resultados
+    # So bloqueia se queda extrema (< -20%) que indica dump ativo
+    if p5m_raw < -20:
         return {"score": 0,
-                "signals": [f"Bloqueado - 5m em queda ({p5m_raw:.1f}%)"],
+                "signals": [f"Bloqueado - 5m em dump ativo ({p5m_raw:.1f}%)"],
                 "verdict": "BLOQUEADO", "category": "FRACO",
                 "active_signals": [], "in_hot": in_hot, "blocked": True}
     if p1h < -10:
@@ -795,6 +798,18 @@ def calculate_confidence(mint):
         trend_recent = (prices[-1] - prices[-4]) / prices[-4]
     else:
         trend_recent = 0
+
+    # -- 5M MOMENTUM PENALTY - penaliza correcoes para o bot aprender --
+    if p5m < -10:
+        pts = int(w.get("momentum_pen", -25)) * 2 // 3
+        score += pts
+        signals.append(f"5m correcao forte {p5m:.1f}% ({pts}pts)")
+        active.append("momentum_pen")
+    elif p5m < 0:
+        pts = int(w.get("momentum_pen", -25)) // 3
+        score += pts
+        signals.append(f"5m correcao leve {p5m:.1f}% ({pts}pts)")
+        active.append("momentum_pen")
 
     # BLOQUEIO DURO - moeda em queda clara no passa
     if trend_recent <= -0.10 and trend_overall <= -0.05:
@@ -2515,6 +2530,18 @@ async def run_backtesting():
         # MEDIOCRES (0-50%) - casos ambguos
         {"name":"MIDCOIN1",   "result":0.35, "mcap":260000, "liq":48000, "vol_ratio":0.13, "hot":False,"signals":["mcap_good","liq_good","vol_ratio_good"]},
         {"name":"MIDCOIN2",   "result":0.28, "mcap":190000, "liq":35000, "vol_ratio":0.16, "hot":True, "signals":["hot_window","mcap_good","liq_good","vol_ratio_good"]},
+        # Moedas reais GEM HUNTERS AI (28/02/2026)
+        {"name":"Pinch",      "result":2.50, "speed":"fast", "mcap":146000, "liq":31000, "vol_ratio":0.125, "hot":True,  "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","momentum","volume_spike","buy_pressure","vol24h_high"]},
+        {"name":"Rabbit",     "result":2.34, "speed":"fast", "mcap":160000, "liq":33000, "vol_ratio":0.070, "hot":True,  "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","momentum","volume_spike","buy_pressure","vol24h_high"]},
+        {"name":"WW3",        "result":1.67, "speed":"slow", "mcap":141000, "liq":30000, "vol_ratio":0.048, "hot":False, "signals":["mcap_good","liq_good","vol_ratio_good","momentum","buy_pressure","vol24h_high"]},
+        # Moedas reais GEM HUNTERS AI (25-26/02/2026)
+        {"name":"NIP",        "result":5.57, "speed":"fast", "mcap":138780, "liq":29790, "vol_ratio":1.00, "hot":True,  "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","momentum","volume_spike","buy_pressure","vol1h_equals_vol24h"]},
+        {"name":"MACRO",      "result":1.81, "speed":"fast", "mcap":711240, "liq":67850, "vol_ratio":1.00, "hot":True,  "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","momentum","volume_spike","buy_pressure","vol1h_equals_vol24h"]},
+        # Moedas reais GEM HUNTERS AI (24/02/2026)
+        {"name":"AUTISM",     "result":12.02,"speed":"fast", "mcap":437620, "liq":53540, "vol_ratio":0.048,"hot":True,  "signals":["hot_window","mcap_good","liq_good","vol_ratio_good","momentum","volume_spike","buy_pressure","vol24h_high"]},
+        # Moedas reais GEM HUNTERS AI (23/02/2026)
+        {"name":"Lovecoin",   "result":1.58, "speed":"slow", "mcap":145470, "liq":30870, "vol_ratio":0.145,"hot":False, "signals":["mcap_good","liq_good","vol_ratio_good","momentum","buy_pressure","vol24h_high"]},
+        {"name":"LOBCHURCH",  "result":1.47, "speed":"slow", "mcap":212490, "liq":36670, "vol_ratio":0.311,"hot":False, "signals":["mcap_good","liq_good","vol_ratio_good","momentum","buy_pressure","vol24h_high"]},
     ]
 
     for coin in historical_base:
