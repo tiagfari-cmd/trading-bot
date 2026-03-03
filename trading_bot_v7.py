@@ -11,7 +11,7 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.8.2 - 01/03/2026"
+BOT_VERSION  = "v11.8.3 - 01/03/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
@@ -721,7 +721,7 @@ def calculate_confidence(mint):
     # BLOQUEIO 2b - moeda velha sem novo impulso: subiu muito em 24h mas agora fraca
     # Exemplo: SOL +74% 24h mas apenas +8% 1h e +1% 5m = pump ja acabou
     p5m_raw = d.get("p5m", 0)
-    if p24h > 50 and p1h < 10 and p5m_raw < 3:
+    if p24h > 50 and p1h < 5 and p5m_raw < 1:
         return {"score": 0,
                 "signals": [f"Bloqueado - pump antigo sem novo impulso (24h:+{p24h:.0f}% mas 1h:{p1h:.1f}% 5m:{p5m_raw:.1f}%)"],
                 "verdict": "BLOQUEADO", "category": "FRACO",
@@ -2078,7 +2078,7 @@ async def dexscreener_scanner():
         ("https://api.dexscreener.com/token-boosts/latest/v1",                  "boosted",  20, 20),
         ("https://api.dexscreener.com/latest/dex/search?q=solana&order=gainers","gainers",  20, 20),
         ("https://api.dexscreener.com/token-profiles/latest/v1",                "novos",    30, 20),
-        ("https://api.dexscreener.com/latest/dex/tokens/v1/solana",                "pump",     15, 50),
+        ("https://api.dexscreener.com/latest/dex/search?q=solana%20pump&order=gainers", "pump", 15, 30),
         ("https://api.dexscreener.com/latest/dex/search?q=solana&order=volume",   "volume",   20, 30),
     ]
     last_fetch = {ep[0]: 0 for ep in endpoints}
@@ -2098,21 +2098,25 @@ async def dexscreener_scanner():
                             pairs = []  # garante que pairs esta sempre definido
                             # token-profiles e token-boosts retornam lista direta
                             if isinstance(data, list):
-                                pairs = []
+                                # Endpoints de lista (boosts/profiles) nao tem volume/priceChange
+                                # Vai buscar dados completos via tokens endpoint
+                                addrs = []
                                 for item in data[:limit]:
                                     addr = item.get("tokenAddress") or item.get("address")
-                                    if not addr: continue
-                                    pairs.append({
-                                        "chainId":     item.get("chainId", "solana"),
-                                        "baseToken":   {"address": addr,
-                                                        "name":    item.get("description", "?"),
-                                                        "symbol":  item.get("symbol", "?")},
-                                        "priceUsd":    str(item.get("price", 0)),
-                                        "fdv":         item.get("marketCap", 0),
-                                        "liquidity":   {"usd": item.get("liquidity", 0)},
-                                        "volume":      {"h1": 0, "h24": 0},
-                                        "priceChange": {},
-                                    })
+                                    if addr: addrs.append(addr)
+                                pairs = []
+                                if addrs:
+                                    batch = "%2C".join(addrs[:30])
+                                    try:
+                                        async with s.get(
+                                            f"https://api.dexscreener.com/latest/dex/tokens/{batch}",
+                                            timeout=aiohttp.ClientTimeout(total=10)
+                                        ) as r2:
+                                            if r2.status == 200:
+                                                d2 = await r2.json()
+                                                pairs = (d2.get("pairs") or [])[:limit]
+                                    except Exception:
+                                        pass
                             else:
                                 pairs = (data.get("pairs") or [])[:limit]
                             # Filtra pares invalidos antes de processar
