@@ -11,11 +11,12 @@ from collections import deque
 #   CONFIGURAO
 # ---------------------------------------------
 
-BOT_VERSION  = "v11.8.3 - 01/03/2026"
+BOT_VERSION  = "v11.8.4 - 03/03/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
 RESULTS_WEBHOOK_URL = os.environ.get("RESULTS_WEBHOOK_URL", "")  # canal #resultados
+UPDATES_WEBHOOK_URL = os.environ.get("UPDATES_WEBHOOK_URL", "https://discord.com/api/webhooks/1478433729138524190/8vUIr3XuGB0fmMyHyuJJempgc3lNQr8YPZvEVjJxLWeLbfGhirQATrfHVY8aw5Ms1psL")  # canal #updates
 JSONBIN_KEY         = os.environ.get("JSONBIN_KEY", "")            # JSONBin X-Master-Key
 JSONBIN_ID          = os.environ.get("JSONBIN_ID", "")             # JSONBin Bin ID
 JSONBIN_URL         = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}"  # URL do bin
@@ -307,6 +308,11 @@ async def save_state_cloud():
             "alerted_tokens":  list(alerted_tokens)[-200:],
             "learns_done":     learns_done,
             "alerts_sent":     alerts_sent,
+            "pending_checks":  {
+                mint: {k: (list(v) if isinstance(v, set) else v) for k, v in data.items()}
+                for mint, data in list(pending_checks.items())
+                if time.time() < data.get("monitor_until", 0)
+            },
             "saved_at":        time.time()
         }
         conn = aiohttp.TCPConnector(ssl=False) if False else aiohttp.TCPConnector()
@@ -346,6 +352,15 @@ async def load_state_cloud():
                     learns_done  = data["learns_done"]
                 if data.get("alerts_sent"):
                     alerts_sent  = data["alerts_sent"]
+                if data.get("pending_checks"):
+                    now_t = time.time()
+                    for mint, entry in data["pending_checks"].items():
+                        if now_t < entry.get("monitor_until", 0):
+                            for k in ["milestones_up","milestones_down","milestones_hit"]:
+                                entry[k] = set(entry.get(k, []))
+                            pending_checks[mint] = entry
+                    if pending_checks:
+                        print(f"[JSONBin] Restaurados {len(pending_checks)} pending_checks ativos")
                 print(f"[JSONBin] Estado carregado: {len(pattern_history)} padroes, {learns_done} aprendizagens")
                 return True
     except Exception as e:
@@ -1752,13 +1767,14 @@ async def send_discord_movement(mint, alert_data, current_price, pct, direction,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
+    url = UPDATES_WEBHOOK_URL if UPDATES_WEBHOOK_URL else DISCORD_WEBHOOK_URL
     try:
         async with aiohttp.ClientSession() as s:
-            await s.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]},
+            await s.post(url, json={"embeds": [embed]},
                          timeout=aiohttp.ClientTimeout(total=5))
-            print(f"[Movimento] {name}: {pct:+.1f}% (milestone {direction} {milestone}%) | prob corrigir: {prob_down}%")
+            print(f"[Updates] {name}: {pct:+.1f}% milestone {direction} {milestone}% -> #updates")
     except Exception as e:
-        print(f"[Movimento] ? {e}")
+        print(f"[Updates] Erro: {e}")
 
 # ---------------------------------------------
 #   LOG / TERMINAL
@@ -2456,14 +2472,20 @@ async def rugpull_monitor():
             # Guarda liquidez atual para comparar na prxima iterao
             data["last_liq"] = curr_liq
 
-            # Sinal 1: liquidez caiu >40% desde ltima verificao
+            # Sinal 1: liquidez caiu >40% - confirmacao dupla (evita falsos alarmes)
             if prev_liq > 0 and curr_liq > 0:
                 liq_drop = (prev_liq - curr_liq) / prev_liq
                 if liq_drop >= 0.40:
-                    rugpull_warned.add(mint)
-                    price_drop = ((alert_price - curr_price) / alert_price * 100) if alert_price > 0 else 0
-                    await send_rugpull_alert(mint, name, prev_liq, curr_liq, price_drop)
-                    continue
+                    if not data.get("liq_drop_seen"):
+                        data["liq_drop_seen"] = time.time()
+                        continue  # aguarda 2a leitura ~30s
+                    else:
+                        rugpull_warned.add(mint)
+                        price_drop = ((alert_price - curr_price) / alert_price * 100) if alert_price > 0 else 0
+                        await send_rugpull_alert(mint, name, prev_liq, curr_liq, price_drop)
+                        continue
+                else:
+                    data["liq_drop_seen"] = None
 
             # Sinal 2: preo caiu >35% muito rapidamente desde o alerta
             if alert_price > 0 and curr_price > 0:
