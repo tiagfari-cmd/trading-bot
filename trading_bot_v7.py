@@ -1715,7 +1715,7 @@ async def send_discord_movement(mint, alert_data, current_price, pct, direction,
     # Preco alvo historico baseado no padrao de sinais
     active_sigs  = alert_data.get("active_signals", [])
     pat_key      = "|".join(sorted(active_sigs[:5])) if len(active_sigs) >= 2 else ""
-    pat          = pattern_history.get(pat_key, {})
+    pat          = next((p for p in pattern_history if p.get("key") == pat_key), {}) if pat_key else {}
     pat_total    = pat.get("total", 0)
     target_field = None
     space_field  = None
