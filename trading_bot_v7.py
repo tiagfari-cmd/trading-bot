@@ -1572,7 +1572,7 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
             f"{target_line}"
             f"{conf_line}"
             f"{bsr_line}\n"
-            f"\n[Chart - abre DexScreener e copia o CA aqui]({dex_url})"
+            f"\n[Chart]({dex_url})"
         ),
         "color": color,
         "fields": [],
@@ -1684,15 +1684,14 @@ async def send_discord_movement(mint, alert_data, current_price, pct, direction,
     elapsed     = int((time.time() - alert_data["alert_time"]) / 60)
 
     if direction == "up":
-        if   milestone >= 200: title = f"??? {name} - +{milestone}% ATINGIDO!"
-        elif milestone >= 100: title = f"?? {name} - +{milestone}% ATINGIDO!"
-        elif milestone >= 50:  title = f"? {name} - +{milestone}% ATINGIDO!"
-        else:                  title = f"? {name} - +{milestone}%"
+        if   milestone >= 200: title = f"🚀🚀 {name} +{pct:.0f}%"
+        elif milestone >= 100: title = f"🚀 {name} +{pct:.0f}%"
+        elif milestone >= 50:  title = f"📈 {name} +{pct:.0f}%"
+        else:                  title = f"📊 {name} +{pct:.0f}% — Update {elapsed}min"
         color = 0x00ff88
     else:
-        if   milestone >= 40: title = f"?? {name} - QUEDA -{milestone}%! CONSIDERA SAIR"
-        else:                 title = f"? {name} - caiu -{milestone}%"
-        color = 0xff3355
+        title = f"📊 {name} {pct:.0f}% — Update {elapsed}min"
+        color = 0xffaa00
 
     # Calcula probabilidade
     prob_up, prob_down, warnings, positives = calc_sell_probability(mint, dex, pct)
@@ -2191,23 +2190,13 @@ async def update_loop():
                     silenced = False
                     print(f"[Monitor] {data.get('name','?')} superou maximo ? volta a monitorizar")
 
-            # Milestones de SUBIDA - avisa uma vez cada
-            milestones_up = data.setdefault("milestones_up", set())
-            for milestone in [25, 50, 100, 200]:
-                if pct >= milestone and milestone not in milestones_up:
-                    milestones_up.add(milestone)
-                    await send_discord_movement(mint, data, current_price, pct, "up", milestone, dex)
-
-            # Milestones de DESCIDA - s se no estiver silenciado
-            if not silenced:
-                milestones_down = data.setdefault("milestones_down", set())
-                for milestone in [20, 40]:
-                    if pct <= -milestone and milestone not in milestones_down:
-                        milestones_down.add(milestone)
-                        await send_discord_movement(mint, data, current_price, pct, "down", milestone, dex)
-                        if milestone == 20:
-                            data["silenced"] = True
-                            print(f"[Monitor] {data.get('name','?')} -{milestone}% ? silenciado ate superar {peak_pct:.0f}%")
+            # Update de 20 em 20 minutos enquanto a moeda sobe
+            last_update  = data.get("last_20min_update", data.get("alert_time", now))
+            last_update_pct = data.get("last_update_pct", 0)
+            if pct > 0 and pct > last_update_pct and (now - last_update) >= 1200:
+                data["last_20min_update"] = now
+                data["last_update_pct"] = pct
+                await send_discord_movement(mint, data, current_price, pct, "up", abs(int(pct)), dex)
 
             # -- DETEO DE RE-ACELERAO APS CONSOLIDAO --
             # Se a moeda parou e volta a acelerar, avisa
