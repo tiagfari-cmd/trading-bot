@@ -1480,35 +1480,6 @@ async def check_and_learn(mint, check_data):
         print(f"  ??  Pesos ajustados: {changed}")
     print(f"{_sep}\n")
 
-    # Envia para #resultados se atingiu +50%
-    if RESULTS_WEBHOOK_URL and "COLA" not in RESULTS_WEBHOOK_URL:
-        _max_p = check_data.get("max_price", current_price)
-        if current_price > _max_p: _max_p = current_price
-        check_data["max_price"] = _max_p
-        _max_g = (_max_p - alert_price) / alert_price if alert_price > 0 else 0
-        if _max_g >= 0.50 and not check_data.get("results_sent", False):
-            check_data["results_sent"] = True
-            _t = time.strftime("%H:%M", time.localtime(check_data["alert_time"]))
-            try:
-                if _max_g >= 5.0:   r_emoji, r_color = "Rocket", 0xff6600
-                elif _max_g >= 2.0: r_emoji, r_color = "Diamante", 0x00ff88
-                elif _max_g >= 1.0: r_emoji, r_color = "Trofeu", 0x00ccff
-                elif _max_g >= 0.5: r_emoji, r_color = "Check", 0x88ff00
-                else:               r_emoji, r_color = "Subiu", 0xffd447
-                async with aiohttp.ClientSession() as _s:
-                    await _s.post(RESULTS_WEBHOOK_URL, json={"embeds": [{
-                        "title": f"{r_emoji} {name} | +{_max_g*100:.0f}%",
-                        "description": (
-                            f"Alertado as **{_t}** | Pico: **+{_max_g*100:.0f}%**\n"
-                            f"Preco alerta: `${alert_price:.8f}` | Pico: `${_max_p:.8f}`"
-                        ),
-                        "color": r_color,
-                        "footer": {"text": f"Trading Bot {BOT_VERSION}"},
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }]}, timeout=aiohttp.ClientTimeout(total=5))
-                print(f"[Resultados] {name} +{_max_g*100:.0f}% enviado")
-            except Exception: pass
-
     # -- 6. LOG CSV -------------------------------------------
     with open(CONFIG["log_file"], "a", newline="") as f:
         import csv as _csv
@@ -2391,11 +2362,41 @@ async def learn_from_skipped():
                     await check_and_learn(mint, chk)  # aprende mas nao remove
                     break  # um checkpoint de cada vez por ciclo
 
-        # Remove moedas que j passaram as 24h de monitorizao
+        # Remove moedas que ja passaram as 24h de monitorizacao
         for mint in [m for m,chk in list(pending_checks.items())
                      if now >= chk.get("monitor_until", chk["check_at"])]:
-            pending_checks.pop(mint, None)
-            print(f"[Monitor] {mint[:12]}... - 24h concluidas, a remover da monitorizacao")
+            chk = pending_checks.pop(mint, {})
+            peak_pct_final = chk.get("peak_pct", 0)
+            print(f"[Monitor] {mint[:12]}... - 24h concluidas, pico: +{peak_pct_final:.0f}%")
+
+            # Envia resultado final para #resultados apos 24h
+            if peak_pct_final >= 10 and not chk.get("results_sent", False):
+                alert_price_r  = chk.get("alert_price", 0)
+                peak_price_r   = alert_price_r * (1 + peak_pct_final / 100)
+                alert_time_str = time.strftime("%H:%M", time.localtime(chk.get("alert_time", now)))
+                name_r = chk.get("name", "?")
+                if peak_pct_final >= 500:  r_emoji, r_color = "🚀", 0xff6600
+                elif peak_pct_final >= 200: r_emoji, r_color = "💎", 0x00ff88
+                elif peak_pct_final >= 100: r_emoji, r_color = "🏆", 0x00ccff
+                elif peak_pct_final >= 50:  r_emoji, r_color = "✅", 0x88ff00
+                else:                       r_emoji, r_color = "📊", 0xffd447
+                url_r = RESULTS_WEBHOOK_URL if RESULTS_WEBHOOK_URL else DISCORD_WEBHOOK_URL
+                try:
+                    async with aiohttp.ClientSession() as _s:
+                        await _s.post(url_r, json={"embeds": [{
+                            "title": f"{r_emoji} {name_r} | Pico +{peak_pct_final:.0f}%",
+                            "description": (
+                                f"Alertado às **{alert_time_str}** | Pico em 24h: **+{peak_pct_final:.0f}%**\n"
+                                f"Preco alerta: `${alert_price_r:.8f}` | Pico: `${peak_price_r:.8f}`\n"
+                                f"[Chart](https://dexscreener.com/solana/{mint})"
+                            ),
+                            "color": r_color,
+                            "footer": {"text": f"Trading Bot {BOT_VERSION} • Resultado final 24h"},
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }]}, timeout=aiohttp.ClientTimeout(total=5))
+                    print(f"[Resultados] {name_r} +{peak_pct_final:.0f}% -> #resultados")
+                except Exception as e:
+                    print(f"[Resultados] Erro: {e}")
 
         # Aprende com moedas ignoradas que subiram (a cada 5 min)
         if int(now) % 300 < 61:
