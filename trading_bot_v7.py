@@ -284,6 +284,8 @@ tokens_seen    = 0
 alerts_sent    = 0
 learns_done    = 0
 pending_checks = {}
+wins_total     = 0   # moedas que subiram +50%
+losses_total   = 0   # moedas que nao subiram +10%
 
 # -- APRENDIZAGEM AVANADA -------------------------------------
 # Moedas que o bot viu mas ignorou (para aprender com oportunidades perdidas)
@@ -1652,16 +1654,22 @@ async def send_discord_movement(mint, alert_data, current_price, pct, direction,
 
     alert_price = alert_data["alert_price"]
     name        = alert_data.get("name", "?")
-    elapsed     = int((time.time() - alert_data["alert_time"]) / 60)
+    elapsed_min = int((time.time() - alert_data["alert_time"]) / 60)
+    if elapsed_min < 60:
+        elapsed_str = f"{elapsed_min}min"
+    else:
+        h = elapsed_min // 60
+        m = elapsed_min % 60
+        elapsed_str = f"{h}h{m:02d}min" if m else f"{h}h"
 
     if direction == "up":
-        if   milestone >= 200: title = f"🚀🚀 {name} +{pct:.0f}%"
-        elif milestone >= 100: title = f"🚀 {name} +{pct:.0f}%"
-        elif milestone >= 50:  title = f"📈 {name} +{pct:.0f}%"
-        else:                  title = f"📊 {name} +{pct:.0f}% — Update {elapsed}min"
+        if   milestone >= 200: title = f"🚀🚀 {name} +{pct:.0f}% — alertada há {elapsed_str}"
+        elif milestone >= 100: title = f"🚀 {name} +{pct:.0f}% — alertada há {elapsed_str}"
+        elif milestone >= 50:  title = f"📈 {name} +{pct:.0f}% — alertada há {elapsed_str}"
+        else:                  title = f"📊 {name} +{pct:.0f}% — alertada há {elapsed_str}"
         color = 0x00ff88
     else:
-        title = f"📊 {name} {pct:.0f}% — Update {elapsed}min"
+        title = f"📊 {name} {pct:.0f}% — alertada há {elapsed_str}"
         color = 0xffaa00
 
     # Calcula probabilidade
@@ -1719,21 +1727,15 @@ async def send_discord_movement(mint, alert_data, current_price, pct, direction,
 
     dex_url = f"https://dexscreener.com/solana/{mint}"
 
-    fields = [
-        {"name": "Variacao total",  "value": f"**{pct:+.1f}%** em {elapsed}min", "inline": True},
-        {"name": "Prob. continuar", "value": f"**{prob_up}%**",                   "inline": True},
-        {"name": "Prob. corrigir",  "value": f"**{prob_down}%**",                 "inline": True},
-        {"name": rec,                  "value": analysis_text,                        "inline": False},
-    ]
-    if target_field: fields.append(target_field)
-    if space_field:  fields.append(space_field)
-    fields.append({"name": "?", "value": f"[Chart]({dex_url})", "inline": False})
-
     embed = {
-        "title":     title,
-        "color":     color,
-        "fields":    fields,
-        "footer":    {"text": f"Trading Bot {BOT_VERSION} ? probabilidades sao orientacao, nao garantia"},
+        "title": title,
+        "description": (
+            f"**+{pct:.0f}%** desde o alerta | alertada há **{elapsed_str}**\n"
+            f"📈 Prob. continuar a subir: **{prob_up}%** | 📉 Prob. corrigir: **{prob_down}%**\n"
+            f"[Chart]({dex_url})"
+        ),
+        "color":  color,
+        "footer": {"text": f"Trading Bot {BOT_VERSION} • probabilidades são orientação, não garantia"},
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
@@ -2369,6 +2371,12 @@ async def learn_from_skipped():
             peak_pct_final = chk.get("peak_pct", 0)
             print(f"[Monitor] {mint[:12]}... - 24h concluidas, pico: +{peak_pct_final:.0f}%")
 
+            # Conta win/loss
+            if peak_pct_final >= 50:
+                wins_total += 1
+            else:
+                losses_total += 1
+
             # Envia resultado final para #resultados apos 24h
             if peak_pct_final >= 10 and not chk.get("results_sent", False):
                 alert_price_r  = chk.get("alert_price", 0)
@@ -2381,14 +2389,17 @@ async def learn_from_skipped():
                 elif peak_pct_final >= 50:  r_emoji, r_color = "✅", 0x88ff00
                 else:                       r_emoji, r_color = "📊", 0xffd447
                 url_r = RESULTS_WEBHOOK_URL if RESULTS_WEBHOOK_URL else DISCORD_WEBHOOK_URL
+                total_r = wins_total + losses_total
+                ratio_str = f"{wins_total}W / {losses_total}L"
+                winrate_str = f"{wins_total/total_r*100:.0f}%" if total_r > 0 else "N/A"
                 try:
                     async with aiohttp.ClientSession() as _s:
                         await _s.post(url_r, json={"embeds": [{
                             "title": f"{r_emoji} {name_r} | Pico +{peak_pct_final:.0f}%",
                             "description": (
                                 f"Alertado às **{alert_time_str}** | Pico em 24h: **+{peak_pct_final:.0f}%**\n"
-                                f"Preco alerta: `${alert_price_r:.8f}` | Pico: `${peak_price_r:.8f}`\n"
-                                f"[Chart](https://dexscreener.com/solana/{mint})"
+                                f"[Chart](https://dexscreener.com/solana/{mint})\n\n"
+                                f"📊 **Win/Loss:** {ratio_str} | Taxa de acerto: **{winrate_str}**"
                             ),
                             "color": r_color,
                             "footer": {"text": f"Trading Bot {BOT_VERSION} • Resultado final 24h"},
@@ -2409,80 +2420,6 @@ async def learn_from_skipped():
             print(f"\n[Status] {datetime.now().strftime('%H:%M:%S')} | Janela: {hot} | "
                   f"Vistas: {tokens_seen} | Alertadas: {len(alerted_tokens)} | "
                   f"Alertas Discord: {alerts_sent} | Aprendizagens: {learns_done}\n")
-
-
-# ---------------------------------------------
-#   RUGPULL DETECTION
-# ---------------------------------------------
-
-rugpull_warned = set()  # mints j avisados de rugpull
-
-async def send_rugpull_alert(mint, name, liq_before, liq_now, price_drop_pct):
-    """Mensagem urgente e diferente quando deteta rugpull."""
-    if "COLA" in DISCORD_WEBHOOK_URL: return
-    dex_url = f"https://dexscreener.com/solana/{mint}"
-    embed = {
-        "title":       f"?? RUGPULL DETETADO - {name} ??",
-        "description": (
-            f"**LIQUIDEZ A SER REMOVIDA - SAI JA SE TENS POSICAO**\n\n"
-            f"? Liquidez: ${liq_before/1000:.0f}K ? ${liq_now/1000:.0f}K\n"
-            f"? Preco caiu: {price_drop_pct:.0f}% nos ultimos minutos\n\n"
-            f"[Chart]({dex_url})"
-        ),
-        "color": 0xff0000,
-        "footer": {"text": f"Trading Bot {BOT_VERSION} ? ALERTA URGENTE - nao e conselho financeiro"},
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-    try:
-        async with aiohttp.ClientSession() as s:
-            await s.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]},
-                         timeout=aiohttp.ClientTimeout(total=5))
-        print(f"[RUGPULL] ALERTA ENVIADO - {name}")
-    except Exception as e:
-        print(f"[RUGPULL] Erro Discord: {e}")
-
-async def rugpull_monitor():
-    """
-    Monitoriza moedas alertadas para detetar rugpull em tempo real.
-    Sinais: liquidez cai >40% em poucos minutos OU preco cai >35% rapidamente.
-    """
-    while True:
-        await asyncio.sleep(20)  # verifica a cada 20 segundos
-        for mint, data in list(pending_checks.items()):
-            if mint in rugpull_warned: continue
-            name = data.get("name","?")
-            dex  = await fetch_dexscreener(mint)
-            if not dex: continue
-
-            curr_liq   = dex.get("liquidity", 0)
-            curr_price = dex.get("price", 0)
-            alert_price= data.get("alert_price", 0)
-            prev_liq   = data.get("last_liq", curr_liq)
-
-            # Guarda liquidez atual para comparar na prxima iterao
-            data["last_liq"] = curr_liq
-
-            # Sinal 1: liquidez caiu >40% - confirmacao dupla (evita falsos alarmes)
-            if prev_liq > 0 and curr_liq > 0:
-                liq_drop = (prev_liq - curr_liq) / prev_liq
-                if liq_drop >= 0.40:
-                    if not data.get("liq_drop_seen"):
-                        data["liq_drop_seen"] = time.time()
-                        continue  # aguarda 2a leitura ~30s
-                    else:
-                        rugpull_warned.add(mint)
-                        price_drop = ((alert_price - curr_price) / alert_price * 100) if alert_price > 0 else 0
-                        await send_rugpull_alert(mint, name, prev_liq, curr_liq, price_drop)
-                        continue
-                else:
-                    data["liq_drop_seen"] = None
-
-            # Sinal 2: preo caiu >35% muito rapidamente desde o alerta
-            if alert_price > 0 and curr_price > 0:
-                price_drop = (alert_price - curr_price) / alert_price
-                if price_drop >= 0.35 and curr_liq < 10000:
-                    rugpull_warned.add(mint)
-                    await send_rugpull_alert(mint, name, prev_liq, curr_liq, price_drop*100)
 
 
 # ---------------------------------------------
@@ -3069,7 +3006,6 @@ async def main():
         dexscreener_scanner(),
         update_loop(),
         maintenance_loop(),
-        rugpull_monitor(),
     )
 
 if __name__ == "__main__":
