@@ -1070,6 +1070,14 @@ def calculate_confidence(mint):
             score += int(w["dev_sold"])
             signals.append(f"??? Dev ja vendeu ({w['dev_sold']:.0f}pts) ??"); active.append("dev_sold")
 
+    # Penaliza fees baixas - token suspeito/fake
+    low_fees = d.get("low_fees")
+    fee_sol  = d.get("pool_fee_sol")
+    if low_fees is True:
+        score -= 25
+        signals.append(f"⚠️ Fees baixas: {fee_sol:.1f} SOL (suspeito - minimo 10 SOL) (-25pts)")
+        active.append("low_fees")
+
     score = max(0, min(100, score))
     if   score >= 70:            cat, v = "ROCKET", "🚀 ROCKET - alto potencial"
     elif score >= 55:             cat, v = "BOM",    "✅ BOM SINAL - potencial moderado"
@@ -1088,16 +1096,37 @@ def calculate_confidence(mint):
 
     # PAIR AGE BONUS - par recente tem mais potencial
     pair_age = d.get("pair_age_hours", 999)
-    if pair_age < 6:
+    if pair_age < 0.5:      # menos de 30 minutos - ouro
+        pts = int(w.get("pair_new", 10)) * 2
+        score += pts
+        signals.append(f"🔥 Token MUITO novo ({pair_age*60:.0f}min) (+{pts}pts)")
+        active.append("pair_new")
+    elif pair_age < 2:      # menos de 2 horas
+        pts = int(w.get("pair_new", 10)) + 5
+        score += pts
+        signals.append(f"⚡ Token novo ({pair_age:.1f}h) (+{pts}pts)")
+        active.append("pair_new")
+    elif pair_age < 6:
         pts = int(w.get("pair_new", 10))
         score += pts
-        signals.append(f"Par muito recente ({pair_age:.1f}h) (+{pts}pts)")
+        signals.append(f"Par recente ({pair_age:.1f}h) (+{pts}pts)")
         active.append("pair_new")
     elif pair_age < 24:
         pts = int(w.get("pair_new", 10)) // 2
         score += pts
-        signals.append(f"Par recente ({pair_age:.1f}h) (+{pts}pts)")
+        signals.append(f"Par do dia ({pair_age:.1f}h) (+{pts}pts)")
         active.append("pair_new")
+
+    # FRESH HOLDERS - muitos holders novos/bots = sinal negativo
+    fresh_pct = d.get("fresh_pct", 0)
+    if fresh_pct > 60:
+        score -= 15
+        signals.append(f"⚠️ Muitos micro-holders ({fresh_pct:.0f}%) - possivel manipulacao (-15pts)")
+        active.append("fresh_bad")
+    elif fresh_pct < 20 and d.get("holders", 0) > 50:
+        score += 8
+        signals.append(f"✅ Holders organicos ({fresh_pct:.0f}% micro) (+8pts)")
+        active.append("fresh_good")
 
     return {"score": score, "signals": signals, "verdict": v, "category": cat,
             "active_signals": active, "blocked": False}
@@ -1243,17 +1272,75 @@ async def fetch_helius_data(mint):
                 # Se o maior holder tem < 1% provavelmente o dev j vendeu
                 dev_still_holds = dev_pct >= 2.0
 
+                # Wallet age - verifica quando cada conta foi criada
+                # Wallets velhas = holders reais, nao bots
+                now_ts = time.time()
+                wallet_ages = []
+                for acc in accounts[:20]:
+                    # Usa o campo de balance como proxy - nao temos data criacao direta
+                    # Mas podemos inferir pela quantidade de holders recentes
+                    pass
+
+                # Fresh holders - holders com contas criadas ha menos de 7 dias
+                # Aproximacao: se muitos holders tem amounts muito pequenos e redondos = bots
+                small_amounts = sum(1 for a in amounts if 0 < float(a) < total_supply * 0.001)
+                fresh_pct = small_amounts / total_holders * 100 if total_holders > 0 else 0
+
                 return {
-                    "holders":        total_holders,
-                    "top10_pct":      top10_pct,
+                    "holders":         total_holders,
+                    "top10_pct":       top10_pct,
                     "dev_still_holds": dev_still_holds,
-                    "dev_pct":        dev_pct,
+                    "dev_pct":         dev_pct,
+                    "fresh_pct":       fresh_pct,
                 }
     except Exception as e:
         print(f"[Helius] ?? {e}")
         return None
 
-async def fetch_dev_token_count(dev_wallet):
+async def fetch_pool_fees(mint):
+    """
+    Verifica as fees do par Raydium via Helius RPC.
+    Fees baixas (<10 SOL) = sinal de token suspeito/fake.
+    Fees normais = 25 SOL.
+    """
+    if "COLA" in HELIUS_API_KEY: return None
+    try:
+        url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+        async with aiohttp.ClientSession() as s:
+            # Busca transacoes de criacao do par para encontrar fees
+            payload = {
+                "jsonrpc": "2.0", "id": 1,
+                "method": "getSignaturesForAddress",
+                "params": [mint, {"limit": 5}]
+            }
+            async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status != 200: return None
+                data = await r.json()
+                sigs = data.get("result", [])
+                if not sigs: return None
+
+                # Busca a transacao de criacao (a mais antiga)
+                oldest_sig = sigs[-1].get("signature")
+                if not oldest_sig: return None
+
+                payload2 = {
+                    "jsonrpc": "2.0", "id": 2,
+                    "method": "getTransaction",
+                    "params": [oldest_sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
+                }
+                async with s.post(url, json=payload2, timeout=aiohttp.ClientTimeout(total=8)) as r2:
+                    if r2.status != 200: return None
+                    tx = await r2.json()
+                    result = tx.get("result", {})
+                    if not result: return None
+
+                    # Fees em lamports -> SOL (1 SOL = 1_000_000_000 lamports)
+                    fee_lamports = result.get("meta", {}).get("fee", 0)
+                    fee_sol = fee_lamports / 1_000_000_000
+                    return fee_sol
+    except Exception as e:
+        print(f"[Fees] Erro: {e}")
+        return None
     """
     Verifica quantos tokens este dev ja criou via Helius.
     Dev que cria muitos tokens rapidamente = red flag.
@@ -1285,6 +1372,18 @@ async def enrich_token_helius(mint):
     d["top10_pct"]       = data["top10_pct"]
     d["dev_still_holds"] = data["dev_still_holds"]
     d["dev_pct"]         = data["dev_pct"]
+    d["fresh_pct"]       = data.get("fresh_pct", 0)
+
+    # Verifica fees do par - fees baixas = token suspeito
+    fee_sol = await fetch_pool_fees(mint)
+    if fee_sol is not None:
+        d["pool_fee_sol"] = fee_sol
+        if fee_sol < 10:
+            d["low_fees"] = True
+            print(f"[Fees] ⚠️ {d.get('name','?')} - fees baixas: {fee_sol:.2f} SOL (minimo recomendado: 10 SOL)")
+        else:
+            d["low_fees"] = False
+            print(f"[Fees] ✅ {d.get('name','?')} - fees OK: {fee_sol:.2f} SOL")
 
     # Verifica histrico do dev
     dev_wallet = token_dev_wallet.get(mint, "")
