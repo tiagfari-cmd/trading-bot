@@ -1325,56 +1325,95 @@ async def fetch_helius_data(mint):
 
 async def fetch_bundle_sniper(mint):
     """
-    Verifica bundled supply e sniper % via Helius.
-    - Bundled: dev criou multiplas wallets para comprar no lancamento (manipulacao)
-    - Sniper %: tokens apanhados no primeiro bloco (vao vender juntos = dump)
+    Bundle e sniper detection via Helius - logica real baseada no primeiro bloco.
+    - Busca as transacoes do primeiro slot do token
+    - Wallets que compraram no mesmo bloco que a criacao = snipers/bundle
+    - Se multiplas wallets do mesmo slot controlam >X% = bundle
     """
     if "COLA" in HELIUS_API_KEY: return {"bundled_pct": 0, "sniper_pct": 0, "bundle_wallets": 0}
     try:
         url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
         async with aiohttp.ClientSession() as s:
-            # Busca as primeiras transacoes do token (criacao + primeiras compras)
+            # 1. Busca todas as assinaturas do mint (mais antigas primeiro)
             payload = {
                 "jsonrpc": "2.0", "id": 1,
                 "method": "getSignaturesForAddress",
-                "params": [mint, {"limit": 10}]
+                "params": [mint, {"limit": 50}]
             }
-            async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as r:
+            async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status != 200: return None
-                data = await r.json()
-                sigs = data.get("result", [])
+                sigs_data = await r.json()
+                sigs = sigs_data.get("result", [])
                 if not sigs: return None
 
-            # Busca holders atuais para calcular concentracao das primeiras wallets
-            payload2 = {
-                "jsonrpc": "2.0", "id": 2,
+            # Slot do primeiro bloco (criacao do token)
+            creation_slot = sigs[-1].get("slot", 0)
+
+            # 2. Transacoes no mesmo slot ou nos 2 primeiros slots = snipers
+            first_block_sigs = [s["signature"] for s in sigs
+                                if abs(s.get("slot", 0) - creation_slot) <= 2
+                                and s.get("signature")][:10]
+
+            if not first_block_sigs:
+                first_block_sigs = [sigs[-1]["signature"]] if sigs else []
+
+            # 3. Busca detalhes das transacoes do primeiro bloco
+            first_block_wallets = set()
+            for sig in first_block_sigs[:5]:
+                payload_tx = {
+                    "jsonrpc": "2.0", "id": 2,
+                    "method": "getTransaction",
+                    "params": [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
+                }
+                async with s.post(url, json=payload_tx, timeout=aiohttp.ClientTimeout(total=8)) as r2:
+                    if r2.status != 200: continue
+                    tx = await r2.json()
+                    result = tx.get("result") or {}
+                    # Extrai todas as wallets envolvidas na transacao
+                    account_keys = result.get("transaction", {}).get("message", {}).get("accountKeys", [])
+                    for acc in account_keys:
+                        if isinstance(acc, dict):
+                            pubkey = acc.get("pubkey", "")
+                        else:
+                            pubkey = str(acc)
+                        if pubkey and len(pubkey) > 30:
+                            first_block_wallets.add(pubkey)
+
+            # 4. Busca holders atuais e cruza com wallets do primeiro bloco
+            payload_holders = {
+                "jsonrpc": "2.0", "id": 3,
                 "method": "getTokenAccounts",
                 "params": {"mint": mint, "limit": 50, "options": {"showZeroBalance": False}}
             }
-            async with s.post(url, json=payload2, timeout=aiohttp.ClientTimeout(total=8)) as r2:
-                if r2.status != 200: return None
-                data2 = await r2.json()
-                accounts = data2.get("result", {}).get("token_accounts", [])
+            async with s.post(url, json=payload_holders, timeout=aiohttp.ClientTimeout(total=8)) as r3:
+                if r3.status != 200: return None
+                holders_data = await r3.json()
+                accounts = holders_data.get("result", {}).get("token_accounts", [])
                 if not accounts: return None
 
                 amounts = sorted([float(a.get("amount", 0)) for a in accounts], reverse=True)
                 total_supply = sum(amounts) or 1
 
-                # Sniper detection: top holders com amounts muito similares = bundle
-                # Se os top 5 holders tem amounts dentro de 10% entre si = provavelmente bundle
-                top5 = amounts[:5]
-                if len(top5) >= 3:
-                    avg_top5 = sum(top5) / len(top5)
-                    similar = sum(1 for a in top5 if abs(a - avg_top5) / avg_top5 < 0.15) if avg_top5 > 0 else 0
-                    bundle_wallets = similar if similar >= 3 else 0
-                    bundled_pct = sum(top5[:bundle_wallets]) / total_supply * 100 if bundle_wallets > 0 else 0
+                # Snipers = wallets do primeiro bloco que ainda tem tokens
+                sniper_amounts = []
+                for acc in accounts:
+                    owner = acc.get("owner", "")
+                    if owner in first_block_wallets:
+                        sniper_amounts.append(float(acc.get("amount", 0)))
+
+                sniper_pct = sum(sniper_amounts) / total_supply * 100
+
+                # Bundle = multiplas wallets com amounts muito similares nos top holders
+                top10 = amounts[:10]
+                if len(top10) >= 4:
+                    avg = sum(top10) / len(top10)
+                    similar_wallets = [a for a in top10
+                                      if avg > 0 and abs(a - avg) / avg < 0.12]
+                    bundle_wallets = len(similar_wallets) if len(similar_wallets) >= 3 else 0
+                    bundled_pct = sum(similar_wallets) / total_supply * 100 if bundle_wallets > 0 else 0
                 else:
                     bundle_wallets = 0
                     bundled_pct = 0
-
-                # Sniper %: top 3 holders com >5% cada = snipers
-                sniper_wallets = [a for a in amounts[:10] if a / total_supply * 100 > 5]
-                sniper_pct = sum(sniper_wallets) / total_supply * 100
 
                 return {
                     "bundled_pct":    bundled_pct,
@@ -1413,19 +1452,20 @@ async def fetch_price_helius(mint):
 
 async def fetch_pool_fees(mint):
     """
-    Verifica as fees do par Raydium via Helius RPC.
-    Fees baixas (<10 SOL) = sinal de token suspeito/fake.
-    Fees normais = 25 SOL.
+    Verifica fees do par via Helius - logica real.
+    Vai a transacao de inicializacao do pool (InitializePool / initialize2)
+    e le o SOL transferido para o pool como fee de criacao.
+    Fees normais pump.fun/Raydium: 25 SOL. Suspeito: <10 SOL.
     """
     if "COLA" in HELIUS_API_KEY: return None
     try:
         url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
         async with aiohttp.ClientSession() as s:
-            # Busca transacoes de criacao do par para encontrar fees
+            # Busca historico de transacoes do mint (as mais antigas = criacao do pool)
             payload = {
                 "jsonrpc": "2.0", "id": 1,
                 "method": "getSignaturesForAddress",
-                "params": [mint, {"limit": 5}]
+                "params": [mint, {"limit": 20}]
             }
             async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as r:
                 if r.status != 200: return None
@@ -1433,28 +1473,43 @@ async def fetch_pool_fees(mint):
                 sigs = data.get("result", [])
                 if not sigs: return None
 
-                # Busca a transacao de criacao (a mais antiga)
-                oldest_sig = sigs[-1].get("signature")
-                if not oldest_sig: return None
+            # Verifica as transacoes mais antigas (criacao do pool)
+            # A transacao de inicializacao tem tipicamente o maior SOL transferido
+            oldest_sigs = [s["signature"] for s in reversed(sigs[:5]) if s.get("signature")]
 
-                payload2 = {
+            max_sol_transfer = 0
+            for sig in oldest_sigs[:3]:
+                payload_tx = {
                     "jsonrpc": "2.0", "id": 2,
                     "method": "getTransaction",
-                    "params": [oldest_sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
+                    "params": [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
                 }
-                async with s.post(url, json=payload2, timeout=aiohttp.ClientTimeout(total=8)) as r2:
-                    if r2.status != 200: return None
+                async with s.post(url, json=payload_tx, timeout=aiohttp.ClientTimeout(total=8)) as r2:
+                    if r2.status != 200: continue
                     tx = await r2.json()
-                    result = tx.get("result", {})
-                    if not result: return None
+                    result = tx.get("result") or {}
+                    meta = result.get("meta") or {}
 
-                    # Fees em lamports -> SOL (1 SOL = 1_000_000_000 lamports)
-                    fee_lamports = result.get("meta", {}).get("fee", 0)
-                    fee_sol = fee_lamports / 1_000_000_000
-                    return fee_sol
+                    # Calcula o maximo SOL transferido numa instrucao desta tx
+                    # A fee de criacao do pool e o maior transfer de SOL na tx de init
+                    pre_balances  = meta.get("preBalances", [])
+                    post_balances = meta.get("postBalances", [])
+
+                    for pre, post in zip(pre_balances, post_balances):
+                        sol_received = (post - pre) / 1_000_000_000
+                        if sol_received > max_sol_transfer:
+                            max_sol_transfer = sol_received
+
+                    # Se encontrou uma tx com >5 SOL transferidos = provavelmente init do pool
+                    if max_sol_transfer > 5:
+                        break
+
+            return max_sol_transfer if max_sol_transfer > 0 else None
     except Exception as e:
         print(f"[Fees] Erro: {e}")
         return None
+
+async def fetch_dev_token_count(dev_wallet):
     """
     Verifica quantos tokens este dev ja criou via Helius.
     Dev que cria muitos tokens rapidamente = red flag.
@@ -1472,7 +1527,6 @@ async def fetch_pool_fees(mint):
                 if r.status != 200: return 0
                 data = await r.json()
                 sigs = data.get("result", [])
-                # Estimativa: muitas transaes recentes = dev ativo a criar tokens
                 return len(sigs)
     except: return 0
 
