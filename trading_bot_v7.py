@@ -1108,7 +1108,7 @@ def calculate_confidence(mint):
 
 async def fetch_dexscreener(mint):
     """Busca dados de Market Cap, Liquidity e Volume do DexScreener."""
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.get(
@@ -1116,14 +1116,20 @@ async def fetch_dexscreener(mint):
                     timeout=aiohttp.ClientTimeout(total=8)
                 ) as r:
                     if r.status == 429:
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(3)
                         continue
                     if r.status != 200:
-                        return None
+                        await asyncio.sleep(1)
+                        continue
                     data  = await r.json()
                     pairs = data.get("pairs") or []
-                    if not pairs: return None
-                    p   = pairs[0]
+                    if not pairs:
+                        await asyncio.sleep(1)
+                        continue
+                    # Escolhe o par com maior liquidez (mais fiavel)
+                    pairs = [p for p in pairs if float((p.get("liquidity") or {}).get("usd") or 0) > 0]
+                    if not pairs: continue
+                    p   = max(pairs, key=lambda x: float((x.get("liquidity") or {}).get("usd") or 0))
                     chg = p.get("priceChange") or {}
                     return {
                         "price":      float(p.get("priceUsd") or 0),
@@ -1139,7 +1145,7 @@ async def fetch_dexscreener(mint):
                         "p24h":       float(chg.get("h24") or 0),
                     }
         except Exception:
-            if attempt == 0:
+            if attempt < 2:
                 await asyncio.sleep(1)
             continue
     return None
