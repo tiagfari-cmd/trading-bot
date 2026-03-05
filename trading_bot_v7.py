@@ -1078,6 +1078,32 @@ def calculate_confidence(mint):
         signals.append(f"⚠️ Fees baixas: {fee_sol:.1f} SOL (suspeito - minimo 10 SOL) (-25pts)")
         active.append("low_fees")
 
+    # Penaliza bundle supply - dev controlou lancamento com multiplas wallets
+    bundled_pct = d.get("bundled_pct", 0)
+    if bundled_pct > 40:
+        score -= 30
+        signals.append(f"🚨 Bundle detectado: {bundled_pct:.0f}% supply controlado pelo dev (-30pts)")
+        active.append("bundle_bad")
+    elif bundled_pct > 20:
+        score -= 15
+        signals.append(f"⚠️ Bundle suspeito: {bundled_pct:.0f}% supply em wallets similares (-15pts)")
+        active.append("bundle_warn")
+
+    # Penaliza snipers - vao vender todos ao mesmo tempo
+    sniper_pct = d.get("sniper_pct", 0)
+    if sniper_pct > 40:
+        score -= 25
+        signals.append(f"🚨 Snipers: {sniper_pct:.0f}% do supply em wallets >5% (-25pts)")
+        active.append("sniper_bad")
+    elif sniper_pct > 20:
+        score -= 10
+        signals.append(f"⚠️ Snipers moderados: {sniper_pct:.0f}% (-10pts)")
+        active.append("sniper_warn")
+    elif sniper_pct < 10 and d.get("holders", 0) > 50:
+        score += 8
+        signals.append(f"✅ Sem snipers significativos ({sniper_pct:.0f}%) (+8pts)")
+        active.append("sniper_ok")
+
     score = max(0, min(100, score))
     if   score >= 70:            cat, v = "ROCKET", "🚀 ROCKET - alto potencial"
     elif score >= 55:             cat, v = "BOM",    "✅ BOM SINAL - potencial moderado"
@@ -1297,6 +1323,94 @@ async def fetch_helius_data(mint):
         print(f"[Helius] ?? {e}")
         return None
 
+async def fetch_bundle_sniper(mint):
+    """
+    Verifica bundled supply e sniper % via Helius.
+    - Bundled: dev criou multiplas wallets para comprar no lancamento (manipulacao)
+    - Sniper %: tokens apanhados no primeiro bloco (vao vender juntos = dump)
+    """
+    if "COLA" in HELIUS_API_KEY: return {"bundled_pct": 0, "sniper_pct": 0, "bundle_wallets": 0}
+    try:
+        url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+        async with aiohttp.ClientSession() as s:
+            # Busca as primeiras transacoes do token (criacao + primeiras compras)
+            payload = {
+                "jsonrpc": "2.0", "id": 1,
+                "method": "getSignaturesForAddress",
+                "params": [mint, {"limit": 10}]
+            }
+            async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status != 200: return None
+                data = await r.json()
+                sigs = data.get("result", [])
+                if not sigs: return None
+
+            # Busca holders atuais para calcular concentracao das primeiras wallets
+            payload2 = {
+                "jsonrpc": "2.0", "id": 2,
+                "method": "getTokenAccounts",
+                "params": {"mint": mint, "limit": 50, "options": {"showZeroBalance": False}}
+            }
+            async with s.post(url, json=payload2, timeout=aiohttp.ClientTimeout(total=8)) as r2:
+                if r2.status != 200: return None
+                data2 = await r2.json()
+                accounts = data2.get("result", {}).get("token_accounts", [])
+                if not accounts: return None
+
+                amounts = sorted([float(a.get("amount", 0)) for a in accounts], reverse=True)
+                total_supply = sum(amounts) or 1
+
+                # Sniper detection: top holders com amounts muito similares = bundle
+                # Se os top 5 holders tem amounts dentro de 10% entre si = provavelmente bundle
+                top5 = amounts[:5]
+                if len(top5) >= 3:
+                    avg_top5 = sum(top5) / len(top5)
+                    similar = sum(1 for a in top5 if abs(a - avg_top5) / avg_top5 < 0.15) if avg_top5 > 0 else 0
+                    bundle_wallets = similar if similar >= 3 else 0
+                    bundled_pct = sum(top5[:bundle_wallets]) / total_supply * 100 if bundle_wallets > 0 else 0
+                else:
+                    bundle_wallets = 0
+                    bundled_pct = 0
+
+                # Sniper %: top 3 holders com >5% cada = snipers
+                sniper_wallets = [a for a in amounts[:10] if a / total_supply * 100 > 5]
+                sniper_pct = sum(sniper_wallets) / total_supply * 100
+
+                return {
+                    "bundled_pct":    bundled_pct,
+                    "sniper_pct":     sniper_pct,
+                    "bundle_wallets": bundle_wallets
+                }
+    except Exception as e:
+        print(f"[Bundle] Erro: {e}")
+        return None
+
+
+async def fetch_price_helius(mint):
+    """
+    Busca preco on-chain via Helius - mais rapido que DexScreener em pumps extremos.
+    Usa getAsset para buscar o preco atual do token diretamente.
+    """
+    if "COLA" in HELIUS_API_KEY: return None
+    try:
+        url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+        async with aiohttp.ClientSession() as s:
+            payload = {
+                "jsonrpc": "2.0", "id": 1,
+                "method": "getAsset",
+                "params": {"id": mint}
+            }
+            async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                if r.status != 200: return None
+                data = await r.json()
+                result = data.get("result", {})
+                token_info = result.get("token_info", {})
+                price_info = token_info.get("price_info", {})
+                price = price_info.get("price_per_token", 0)
+                return float(price) if price else None
+    except Exception:
+        return None
+
 async def fetch_pool_fees(mint):
     """
     Verifica as fees do par Raydium via Helius RPC.
@@ -1394,7 +1508,18 @@ async def enrich_token_helius(mint):
             d["dev_suspicious"] = True  # dev muito ativo = suspeito
             print(f"[Helius] ?? Dev suspeito - {dev_tx_count} transacoes recentes")
 
-    print(f"[Helius] {d.get('name','?')} - {data['holders']} holders | top10: {data['top10_pct']:.0f}% | dev: {'?' if data['dev_still_holds'] else '? vendeu'}")
+    # Verifica bundle e snipers
+    bundle = await fetch_bundle_sniper(mint)
+    if bundle:
+        d["bundled_pct"]    = bundle["bundled_pct"]
+        d["sniper_pct"]     = bundle["sniper_pct"]
+        d["bundle_wallets"] = bundle["bundle_wallets"]
+        if bundle["bundled_pct"] > 20:
+            print(f"[Bundle] ⚠️ {d.get('name','?')} - bundle detectado: {bundle['bundled_pct']:.0f}% ({bundle['bundle_wallets']} wallets)")
+        if bundle["sniper_pct"] > 30:
+            print(f"[Sniper] ⚠️ {d.get('name','?')} - snipers: {bundle['sniper_pct']:.0f}%")
+
+    print(f"[Helius] {d.get('name','?')} - {data['holders']} holders | top10: {data['top10_pct']:.0f}% | dev: {'✅' if data['dev_still_holds'] else '❌ vendeu'} | bundle: {d.get('bundled_pct',0):.0f}% | snipers: {d.get('sniper_pct',0):.0f}%")
 
 # ---------------------------------------------
 #   APRENDIZAGEM (1h depois)
@@ -2243,10 +2368,22 @@ async def update_loop():
         for mint, data in list(pending_checks.items()):
             alert_price = data["alert_price"]
 
-            # Busca preo atual
+            # Busca preco atual - DexScreener + confirmacao Helius se necessario
             dex = await fetch_dexscreener(mint)
             if dex and dex["price"] > 0:
                 current_price = dex["price"]
+                # Se ja temos preco anterior e o DexScreener mostra subida pequena,
+                # confirma via Helius on-chain (DexScreener tem delay em pumps extremos)
+                prev_price = data.get("last_known_price", current_price)
+                dex_pct = (current_price - prev_price) / prev_price * 100 if prev_price > 0 else 0
+                if dex_pct < 30 and prev_price > 0:
+                    # DexScreener pode estar atrasado - confirma via Helius
+                    helius_price = await fetch_price_helius(mint)
+                    if helius_price and helius_price > current_price * 1.1:
+                        # Helius mostra preco significativamente maior - usa esse
+                        current_price = helius_price
+                        print(f"[Monitor] {data.get('name','?')} preco corrigido via Helius: ${helius_price:.8f} (DEX estava atrasado)")
+                data["last_known_price"] = current_price
             elif mint in token_data:
                 prices = list(token_data[mint]["prices"])
                 current_price = prices[-1] if prices else None
