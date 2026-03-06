@@ -1916,7 +1916,7 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
     embed = {
         "title":       f"{icon} - {d.get('name','?')} | {d.get('symbol','?')}",
         "description": (
-            f"Price: `${price:.8f}`  Score: {analysis['score']}%  Window: {janela}\n"
+            f"Price: `${price:.8f}`  Score: {min(analysis['score'], 100)}%\n"
             f"MCap: {mcap_str}  Liq: {liq_str}  Ratio: {ratio}"
             f"{target_line}"
             f"{conf_line}"
@@ -1925,7 +1925,7 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
         ),
         "color": color,
         "fields": [],
-        "footer":    {"text": f"Trading Bot {BOT_VERSION} • Alert #{alerts_sent+1} Source: {source}"},
+        "footer":    {"text": f"First Call Bot • Alert #{alerts_sent+1}"},
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
@@ -2128,7 +2128,7 @@ async def send_discord_movement(mint, alert_data, current_price, pct, direction,
             f"[Chart]({dex_url})"
         ),
         "color":  color,
-        "footer": {"text": f"Trading Bot {BOT_VERSION} • probabilities are guidance, not a guarantee"},
+        "footer": {"text": "First Call Bot • probabilities are guidance, not a guarantee"},
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
@@ -2447,7 +2447,7 @@ async def pumpfun_watchdog():
                                     + str(int(silence/60)) + " min**. A forcar reconexao..."
                                 ),
                                 "color": 0xff8800,
-                                "footer": {"text": f"Trading Bot {BOT_VERSION}"},
+                                "footer": {"text": "First Call Bot"},
                                 "timestamp": datetime.now(timezone.utc).isoformat()
                             }]},
                             timeout=aiohttp.ClientTimeout(total=5))
@@ -2664,7 +2664,7 @@ async def update_loop():
                                         "title":       "RE-ACELERACAO -- " + name + "!",
                                         "description": reaccel_desc,
                                         "color": 0x00ccff,
-                                        "footer": {"text": f"Trading Bot {BOT_VERSION} - Re-aceleracao detetada"},
+                                        "footer": {"text": "First Call Bot • Re-acceleration detected"},
                                         "timestamp": datetime.now(timezone.utc).isoformat()
                                     }
                                     try:
@@ -2853,7 +2853,7 @@ async def learn_from_skipped():
                                 f"📊 **Win/Loss:** {ratio_str} | Win rate: **{winrate_str}**"
                             ),
                             "color": r_color,
-                            "footer": {"text": f"Trading Bot {BOT_VERSION} • Resultado final 24h"},
+                            "footer": {"text": "First Call Bot • Final result 24h"},
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }]}, timeout=aiohttp.ClientTimeout(total=5))
                     print(f"[Resultados] {name_r} +{peak_pct_final:.0f}% -> #resultados")
@@ -3412,7 +3412,7 @@ async def main():
                     "title":       "BOT REINICIOU",
                     "description": crash_desc,
                     "color": 0xff9900,
-                    "footer": {"text": f"Trading Bot {BOT_VERSION} - Auto-recuperacao"},
+                    "footer": {"text": "First Call Bot"},
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 try:
@@ -3434,7 +3434,7 @@ async def main():
             "title":       f"[BOT] Bot Arrancou - {BOT_VERSION}",
             "description": "Nova sessao iniciada! | DexScreener primario | MCap $80K-$1M | Liq $12K-$70K | Vol>5%",
             "color": 0x00ff88,
-            "footer": {"text": f"Trading Bot {BOT_VERSION}"},
+            "footer": {"text": "First Call Bot"},
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         try:
