@@ -2772,7 +2772,7 @@ async def learn_from_skipped():
                 if sig not in WEIGHTS: continue
                 cur   = WEIGHTS[sig]
                 delta = abs(cur) * factor
-                WEIGHTS[sig] = max(5.0, min(30.0, cur + delta)) if cur > 0 else max(-30.0, min(-5.0, cur - delta))
+                WEIGHTS[sig] = max(5.0, min(40.0, cur + delta)) if cur > 0 else max(-40.0, min(-5.0, cur - delta))
 
             # Se o score era perto do mnimo, baixa o mnimo ligeiramente
             if data["score"] >= CONFIG["min_confidence"] - 10:
