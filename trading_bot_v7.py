@@ -1107,19 +1107,21 @@ def calculate_confidence(mint):
         active.append("sniper_ok")
 
     # RED FLAGS - maximo 1 vermelho permitido
-    # Criticos: top10>15%, bundlers>30%, lp_burned<95%
+    # Criticos: top10>15%, bundlers>30%, snipers>5%, lp_burned<95%
     red_flags = 0
     top10_pct_check = d.get("top10_pct", 0)
     bundled_check   = d.get("bundled_pct", 0)
-    lp_burned_check = d.get("lp_burned_pct", None)  # None = nao verificado ainda
+    sniper_check    = d.get("sniper_pct", 0)
+    lp_burned_check = d.get("lp_burned_pct", None)
 
     if top10_pct_check > 15:   red_flags += 1
     if bundled_check   > 30:   red_flags += 1
+    if sniper_check    > 5:    red_flags += 1
     if lp_burned_check is not None and lp_burned_check < 95: red_flags += 1
 
     if red_flags >= 2:
-        score = 0  # bloqueia automaticamente
-        signals.append(f"🚫 {red_flags} red flags ({top10_pct_check:.0f}% top10 | {bundled_check:.0f}% bundle | LP {lp_burned_check:.0f if lp_burned_check is not None else 'N/A'}%) - BLOQUEADO")
+        score = 0
+        signals.append(f"🚫 {red_flags} red flags ({top10_pct_check:.0f}% top10 | {bundled_check:.0f}% bundle | {sniper_check:.0f}% snipers | LP {lp_burned_check:.0f if lp_burned_check is not None else 'N/A'}%) - BLOQUEADO")
         return {"score": 0, "signals": signals, "verdict": "❌ BLOQUEADO - muitos red flags", "category": "FRACO",
                 "active_signals": active, "blocked": True}
 
@@ -2268,6 +2270,26 @@ async def process_trade(msg, source="pump.fun"):
     qualifies = (cat in CONFIG["min_category"] and
                  analysis["score"] >= min_score and
                  not analysis.get("blocked", False))
+
+    if qualifies:
+        # Verifica se os dados do Helius ja chegaram (top10, bundle, lp_burned)
+        # Se nao chegaram ainda, aguarda ate 8 segundos antes de alertar
+        helius_ready = d.get("top10_pct", 0) > 0 or d.get("holders", 0) > 0
+        if not helius_ready:
+            print(f"  [aguarda] {d.get('name','?')} - a aguardar dados Helius...")
+            for _ in range(8):
+                await asyncio.sleep(1)
+                if d.get("top10_pct", 0) > 0 or d.get("holders", 0) > 0:
+                    break
+            # Re-analisa com dados completos
+            analysis = calculate_confidence(mint)
+            cat      = analysis.get("category")
+            qualifies = (cat in CONFIG["min_category"] and
+                         analysis["score"] >= min_score and
+                         not analysis.get("blocked", False))
+            if not qualifies:
+                print(f"  [skip apos helius] {d.get('name','?')} — {analysis.get('verdict','')}")
+                return
 
     if qualifies:
         # -- ALERTA 24/7 - janela ativa ou no --
