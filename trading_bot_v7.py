@@ -1116,7 +1116,7 @@ def calculate_confidence(mint):
 
     if top10_pct_check > 15:   red_flags += 1
     if bundled_check   > 30:   red_flags += 1
-    if sniper_check    > 5:    red_flags += 1
+    if sniper_check    > 10:   red_flags += 1
     if lp_burned_check is not None and lp_burned_check < 95: red_flags += 1
 
     if red_flags >= 1:
