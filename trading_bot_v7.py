@@ -37,7 +37,7 @@ DATA_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp")
 
 CONFIG = {
     "min_confidence":      55,
-    "min_category":        ["ROCKET", "BOM"],
+    "min_category":        ["ROCKET"],
     "volume_spike_x":       3,
     "buy_sell_ratio_bull":  0.65,
     "window_trades":        20,
@@ -1070,12 +1070,14 @@ def calculate_confidence(mint):
             score += int(w["dev_sold"])
             signals.append(f"??? Dev ja vendeu ({w['dev_sold']:.0f}pts) ??"); active.append("dev_sold")
 
-    # Penaliza fees baixas - token suspeito/fake
-    low_fees = d.get("low_fees")
-    fee_sol  = d.get("pool_fee_sol")
+    # Penaliza fees baixas - fees < 10% do MCap = token suspeito/fake
+    low_fees  = d.get("low_fees")
+    fee_sol   = d.get("pool_fee_sol", 0)
+    fee_usd   = fee_sol * 130
+    mcap_s    = d.get("market_cap", 0)
     if low_fees is True:
         score -= 25
-        signals.append(f"⚠️ Fees baixas: {fee_sol:.1f} SOL (suspeito - minimo 10 SOL) (-25pts)")
+        signals.append(f"⚠️ Fees baixas: ${fee_usd:.0f} < 10% MCap - token suspeito (-25pts)")
         active.append("low_fees")
 
     # Penaliza bundle supply - dev controlou lancamento com multiplas wallets
@@ -1104,11 +1106,27 @@ def calculate_confidence(mint):
         signals.append(f"✅ Sem snipers significativos ({sniper_pct:.0f}%) (+8pts)")
         active.append("sniper_ok")
 
+    # RED FLAGS - maximo 1 vermelho permitido
+    # Criticos: top10>15%, bundlers>30%, lp_burned<95%
+    red_flags = 0
+    top10_pct_check = d.get("top10_pct", 0)
+    bundled_check   = d.get("bundled_pct", 0)
+    lp_burned_check = d.get("lp_burned_pct", None)  # None = nao verificado ainda
+
+    if top10_pct_check > 15:   red_flags += 1
+    if bundled_check   > 30:   red_flags += 1
+    if lp_burned_check is not None and lp_burned_check < 95: red_flags += 1
+
+    if red_flags >= 2:
+        score = 0  # bloqueia automaticamente
+        signals.append(f"🚫 {red_flags} red flags ({top10_pct_check:.0f}% top10 | {bundled_check:.0f}% bundle | LP {lp_burned_check:.0f if lp_burned_check is not None else 'N/A'}%) - BLOQUEADO")
+        return {"score": 0, "signals": signals, "verdict": "❌ BLOQUEADO - muitos red flags", "category": "FRACO",
+                "active_signals": active, "blocked": True}
+
     score = max(0, min(100, score))
     if   score >= 70:            cat, v = "ROCKET", "🚀 ROCKET - alto potencial"
-    elif score >= 55:             cat, v = "BOM",    "✅ BOM SINAL - potencial moderado"
-    elif score >= 35:             cat, v = "FRACO",  "? FRACO - ignorado"
-    else:                         cat, v = "FRACO",  "? SEM SINAL"
+    elif score >= 35:             cat, v = "FRACO",  "❌ FRACO - ignorado"
+    else:                         cat, v = "FRACO",  "❌ SEM SINAL"
     # VIRAL THEME BONUS - tema com +500% nas ultimas 6h
     token_theme = detect_theme(d.get("name", ""))
     if token_theme and token_theme in viral_themes:
@@ -1425,6 +1443,48 @@ async def fetch_bundle_sniper(mint):
         return None
 
 
+async def fetch_lp_burned(mint):
+    """
+    Verifica se a LP (liquidez) foi burned a 100%.
+    LP burned = dev nao pode retirar a liquidez = mais seguro.
+    Burn address Solana: 1nc1nerator11111111111111111111111111111111
+    ou: 11111111111111111111111111111111
+    """
+    if "COLA" in HELIUS_API_KEY: return None
+    BURN_ADDRESSES = {
+        "1nc1nerator11111111111111111111111111111111",
+        "11111111111111111111111111111111",
+        "So11111111111111111111111111111111111111112",
+    }
+    try:
+        url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+        async with aiohttp.ClientSession() as s:
+            # Busca LP token accounts - o LP token tem o mesmo mint mas owners sao pools
+            payload = {
+                "jsonrpc": "2.0", "id": 1,
+                "method": "getTokenAccounts",
+                "params": {"mint": mint, "limit": 50, "options": {"showZeroBalance": False}}
+            }
+            async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status != 200: return None
+                data = await r.json()
+                accounts = data.get("result", {}).get("token_accounts", [])
+                if not accounts: return None
+
+                total = sum(float(a.get("amount", 0)) for a in accounts)
+                if total == 0: return None
+
+                burned = sum(
+                    float(a.get("amount", 0)) for a in accounts
+                    if a.get("owner", "") in BURN_ADDRESSES
+                )
+                burned_pct = burned / total * 100
+                return burned_pct
+    except Exception as e:
+        print(f"[LP] Erro: {e}")
+        return None
+
+
 async def fetch_price_helius(mint):
     """
     Busca preco on-chain via Helius - mais rapido que DexScreener em pumps extremos.
@@ -1542,16 +1602,20 @@ async def enrich_token_helius(mint):
     d["dev_pct"]         = data["dev_pct"]
     d["fresh_pct"]       = data.get("fresh_pct", 0)
 
-    # Verifica fees do par - fees baixas = token suspeito
+    # Verifica fees do par - fees devem ser >= 10% do MCap
     fee_sol = await fetch_pool_fees(mint)
     if fee_sol is not None:
         d["pool_fee_sol"] = fee_sol
-        if fee_sol < 10:
+        mcap       = d.get("market_cap", 0)
+        sol_price  = 130  # aproximacao USD/SOL - suficiente para a comparacao
+        fee_usd    = fee_sol * sol_price
+        min_fee_usd = mcap * 0.10  # minimo 10% do MCap
+        if mcap > 0 and fee_usd < min_fee_usd:
             d["low_fees"] = True
-            print(f"[Fees] ⚠️ {d.get('name','?')} - fees baixas: {fee_sol:.2f} SOL (minimo recomendado: 10 SOL)")
+            print(f"[Fees] ⚠️ {d.get('name','?')} - fees baixas: ${fee_usd:.0f} ({fee_sol:.2f} SOL) < 10% MCap ${min_fee_usd:.0f}")
         else:
             d["low_fees"] = False
-            print(f"[Fees] ✅ {d.get('name','?')} - fees OK: {fee_sol:.2f} SOL")
+            print(f"[Fees] ✅ {d.get('name','?')} - fees OK: ${fee_usd:.0f} ({fee_sol:.2f} SOL) vs MCap ${mcap:.0f}")
 
     # Verifica histrico do dev
     dev_wallet = token_dev_wallet.get(mint, "")
@@ -1573,7 +1637,16 @@ async def enrich_token_helius(mint):
         if bundle["sniper_pct"] > 30:
             print(f"[Sniper] ⚠️ {d.get('name','?')} - snipers: {bundle['sniper_pct']:.0f}%")
 
-    print(f"[Helius] {d.get('name','?')} - {data['holders']} holders | top10: {data['top10_pct']:.0f}% | dev: {'✅' if data['dev_still_holds'] else '❌ vendeu'} | bundle: {d.get('bundled_pct',0):.0f}% | snipers: {d.get('sniper_pct',0):.0f}%")
+    # Verifica LP burned
+    lp_burned_pct = await fetch_lp_burned(mint)
+    if lp_burned_pct is not None:
+        d["lp_burned_pct"] = lp_burned_pct
+        if lp_burned_pct >= 95:
+            print(f"[LP] ✅ {d.get('name','?')} - LP burned: {lp_burned_pct:.0f}%")
+        else:
+            print(f"[LP] ⚠️ {d.get('name','?')} - LP NAO burned: {lp_burned_pct:.0f}%")
+
+    print(f"[Helius] {d.get('name','?')} - {data['holders']} holders | top10: {data['top10_pct']:.0f}% | bundle: {d.get('bundled_pct',0):.0f}% | snipers: {d.get('sniper_pct',0):.0f}% | LP burned: {d.get('lp_burned_pct',0):.0f}%")
 
 # ---------------------------------------------
 #   APRENDIZAGEM (1h depois)
@@ -1786,8 +1859,8 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
 
     d       = token_data[mint]
     cat     = analysis.get("category", "?")
-    color   = {"ROCKET": 0x00ff88, "BOM": 0xffd447}.get(cat, 0x888888)
-    icon    = {"ROCKET": "ROCKET", "BOM": "BOM"}.get(cat, cat)
+    color   = {"ROCKET": 0x00ff88}.get(cat, 0x888888)
+    icon    = "🚀"
     mcap    = d.get("market_cap", 0)
     liq     = d.get("liquidity", 0)
     vol_1h  = d.get("vol_1h", 0)
@@ -2054,7 +2127,7 @@ def log_alert(mint, analysis, price, source):
 def print_alert(mint, analysis, price, source):
     d    = token_data[mint]
     cat  = analysis.get("category", "?")
-    icon = {"ROCKET": "?", "BOM": "?"}.get(cat, "?")
+    icon = "🚀"
     mcap = d.get("market_cap", 0)
     liq  = d.get("liquidity", 0)
     print("\n" + "?"*60)
@@ -2149,6 +2222,22 @@ async def process_trade(msg, source="pump.fun"):
     now      = time.time()
     cat      = analysis.get("category")
     price    = prices[-1] if prices else 0
+
+    # LOG detalhado do motivo de bloqueio
+    d_now = token_data.get(mint, {})
+    mcap  = d_now.get("market_cap", 0)
+    liq   = d_now.get("liquidity", 0)
+    score = analysis.get("score", 0)
+    blocked = analysis.get("blocked", False)
+    if cat != "ROCKET" or blocked or score < CONFIG["min_confidence"]:
+        motivo = []
+        if blocked:                              motivo.append(f"BLOQUEADO({analysis.get('verdict','')})")
+        if cat != "ROCKET":                      motivo.append(f"cat={cat}(score={score}%)")
+        if mcap > 0 and mcap < 80_000:           motivo.append(f"mcap baixo(${mcap/1000:.0f}K)")
+        if mcap > 1_000_000:                     motivo.append(f"mcap alto(${mcap/1000:.0f}K)")
+        if liq > 0 and liq < 12_000:             motivo.append(f"liq baixa(${liq/1000:.0f}K)")
+        if not motivo:                           motivo.append(f"score insuf({score}%<70%)")
+        print(f"  [skip] {d_now.get('name','?')} — {' | '.join(motivo)}")
 
     # -- GUARDA MOEDAS IGNORADAS para aprender com oportunidades perdidas --
     hot_now_skip = is_hot_window()
@@ -2674,7 +2763,10 @@ async def learn_from_skipped():
             print(f"[Monitor] {mint[:12]}... - 24h concluidas, pico: +{peak_pct_final:.0f}%")
 
             # Conta win/loss
-            if peak_pct_final >= 50:
+            # Win = apareceu em pelo menos 1 update (atingiu +25% ou mais)
+            # Loss = nao apareceu em nenhum update
+            milestones_sent = chk.get("milestones_up", [])
+            if milestones_sent:
                 wins_total += 1
             else:
                 losses_total += 1
