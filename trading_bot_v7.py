@@ -204,7 +204,12 @@ async def save_weights_to_railway(w):
                 if r.status == 200:
                     _last_railway_save   = now
                     _last_saved_weights  = dict(w)
-                    print(f"[Railway] ? Pesos guardados na variavel BOT_WEIGHTS")
+                    print(f"[Railway] ✅ Pesos guardados na variavel BOT_WEIGHTS")
+                    # Log pesos actuais para detectar deriva
+                    top_pos = sorted([(k,v) for k,v in WEIGHTS.items() if v > 0], key=lambda x: -x[1])[:3]
+                    top_neg = sorted([(k,v) for k,v in WEIGHTS.items() if v < 0], key=lambda x: x[1])[:3]
+                    print(f"[Pesos] Top positivos: {top_pos} | Top negativos: {top_neg}")
+                    print(f"[Pesos] min_confidence atual: {CONFIG['min_confidence']}%")
                 else:
                     print(f"[Railway] ?? Erro ao guardar pesos: {r.status}")
     except Exception as e:
@@ -259,6 +264,18 @@ def load_alerted():
     return set()
 def save_alerted():
     json.dump(list(alerted_tokens), open(ALERTED_FILE, "w"))
+
+def cleanup_alerted():
+    """Remove moedas alertadas ha mais de 48h - evita crescimento infinito."""
+    global alerted_tokens
+    # alerted_tokens e um set de mints - nao tem timestamps
+    # Limita a 2000 entradas maximas (rolling window)
+    if len(alerted_tokens) > 2000:
+        # Converte para lista, remove as mais antigas (primeiras)
+        lst = list(alerted_tokens)
+        alerted_tokens = set(lst[-1500:])  # guarda as 1500 mais recentes
+        save_alerted()
+        print(f"[Cleanup] alerted_tokens reduzido para {len(alerted_tokens)} entradas")
 
 alerted_tokens = load_alerted()  # <- NUNCA repete, mesmo aps reiniciar
 
@@ -1912,15 +1929,32 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
-    try:
-        async with aiohttp.ClientSession() as s:
-            r = await s.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]},
-                             timeout=aiohttp.ClientTimeout(total=5))
-            if r.status in (200, 204):
-                alerts_sent += 1
-                print(f"[Discord] ? #{alerts_sent} - {d.get('name','?')} score:{analysis['score']}% mcap:${mcap/1000:.0f}K via {source}")
-    except Exception as e:
-        print(f"[Discord] ? {e}")
+    # Discord send with retry - nunca marca como alertado se falhou
+    sent = False
+    for attempt in range(3):
+        try:
+            async with aiohttp.ClientSession() as s:
+                r = await s.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]},
+                                 timeout=aiohttp.ClientTimeout(total=5))
+                if r.status in (200, 204):
+                    alerts_sent += 1
+                    sent = True
+                    print(f"[Discord] ✅ #{alerts_sent} - {d.get('name','?')} score:{analysis['score']}% mcap:${mcap/1000:.0f}K via {source}")
+                    break
+                elif r.status == 429:  # rate limit
+                    retry_after = float((await r.json()).get("retry_after", 2))
+                    print(f"[Discord] ⏳ Rate limit - aguarda {retry_after:.1f}s")
+                    await asyncio.sleep(retry_after)
+                else:
+                    print(f"[Discord] ⚠️ Status {r.status} - tentativa {attempt+1}/3")
+                    await asyncio.sleep(1)
+        except Exception as e:
+            print(f"[Discord] ❌ {e} - tentativa {attempt+1}/3")
+            await asyncio.sleep(1)
+    if not sent:
+        # Remove da lista de alertados - nao chegou ao Discord
+        alerted_tokens.discard(mint)
+        print(f"[Discord] ❌ FALHOU apos 3 tentativas - {d.get('name','?')} removido de alertados")
 
 # ---------------------------------------------
 #   DISCORD - ATUALIZAO 20 MINUTOS
@@ -2255,7 +2289,7 @@ async def process_trade(msg, source="pump.fun"):
                 "score":      analysis["score"],
                 "category":   cat,
                 "active":     analysis["active_signals"],
-                "check_at":   now + SKIP_CHECK_AFTER,
+                "check_at":   now + min(SKIP_CHECK_AFTER, 1800),  # max 30min reavaliacao
                 "name":       d.get("name","?"),
                 "mcap":       d.get("market_cap", 0),
                 "liq":        d.get("liquidity", 0),
@@ -2295,6 +2329,7 @@ async def process_trade(msg, source="pump.fun"):
         # -- ALERTA 24/7 - hot window ou no --
         alerted_tokens.add(mint)
         save_alerted()
+        cleanup_alerted()
         print_alert(mint, analysis, price, source)
         log_alert(mint, analysis, price, source)
         await send_discord_alert(mint, analysis, price, source)
@@ -2737,7 +2772,7 @@ async def learn_from_skipped():
                 if sig not in WEIGHTS: continue
                 cur   = WEIGHTS[sig]
                 delta = abs(cur) * factor
-                WEIGHTS[sig] = max(5.0, min(40.0, cur + delta)) if cur > 0 else max(-40.0, min(-5.0, cur - delta))
+                WEIGHTS[sig] = max(5.0, min(30.0, cur + delta)) if cur > 0 else max(-30.0, min(-5.0, cur - delta))
 
             # Se o score era perto do mnimo, baixa o mnimo ligeiramente
             if data["score"] >= CONFIG["min_confidence"] - 10:
