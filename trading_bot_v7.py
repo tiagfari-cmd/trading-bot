@@ -1119,7 +1119,7 @@ def calculate_confidence(mint):
     if sniper_check    > 5:    red_flags += 1
     if lp_burned_check is not None and lp_burned_check < 95: red_flags += 1
 
-    if red_flags >= 2:
+    if red_flags >= 1:
         score = 0
         signals.append(f"🚫 {red_flags} red flags ({top10_pct_check:.0f}% top10 | {bundled_check:.0f}% bundle | {sniper_check:.0f}% snipers | LP {lp_burned_check:.0f if lp_burned_check is not None else 'N/A'}%) - BLOQUEADO")
         return {"score": 0, "signals": signals, "verdict": "❌ BLOQUEADO - muitos red flags", "category": "FRACO",
