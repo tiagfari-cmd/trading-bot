@@ -3,6 +3,13 @@
 
 
 import asyncio, csv, json, os, time, aiohttp, websockets
+try:
+    import discord
+    from discord.ext import commands
+    DISCORD_LIB = True
+except ImportError:
+    DISCORD_LIB = False
+    print("[Bot] discord.py nao instalado - a correr sem bot Discord")
 from aiohttp import web
 from datetime import datetime, timezone
 from collections import deque
@@ -17,6 +24,7 @@ BOT_VERSION  = "v11.8.4 - 03/03/2026"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
 RESULTS_WEBHOOK_URL  = os.environ.get("RESULTS_WEBHOOK_URL", "")   # canal #resultados
 FEEDBACK_WEBHOOK_URL = os.environ.get("FEEDBACK_WEBHOOK_URL", "")  # canal privado #bot-feedback
+DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")  # token do bot Discord
 UPDATES_WEBHOOK_URL = os.environ.get("UPDATES_WEBHOOK_URL", "https://discord.com/api/webhooks/1478433729138524190/8vUIr3XuGB0fmMyHyuJJempgc3lNQr8YPZvEVjJxLWeLbfGhirQATrfHVY8aw5Ms1psL")  # canal #updates
 JSONBIN_KEY         = os.environ.get("JSONBIN_KEY", "")            # JSONBin X-Master-Key
 JSONBIN_ID          = os.environ.get("JSONBIN_ID", "")             # JSONBin Bin ID
@@ -2542,6 +2550,135 @@ async def send_feedback_request(mint, name, score, signals, alert_price):
     except Exception as e:
         print(f"[Feedback] ❌ Erro: {e}")
 
+
+# ─────────────────────────────────────────────
+#   DISCORD BOT - lê reações e comandos
+# ─────────────────────────────────────────────
+
+# Guarda message_id -> mint para associar reações ao alerta certo
+feedback_messages = {}   # message_id (int) -> mint
+alert_messages    = {}   # mint -> message_id no #alerts (para botões)
+
+discord_bot = None  # instancia global do bot
+
+async def start_discord_bot():
+    """Inicia o bot Discord em paralelo com o scanner."""
+    global discord_bot
+    if not DISCORD_LIB:
+        print("[Bot] discord.py nao disponivel - feedback manual desativado")
+        return
+    if not DISCORD_BOT_TOKEN:
+        print("[Bot] DISCORD_BOT_TOKEN nao definido - bot Discord desativado")
+        return
+
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.reactions       = True
+    intents.members         = True
+
+    discord_bot = commands.Bot(command_prefix="!", intents=intents)
+
+    @discord_bot.event
+    async def on_ready():
+        print(f"[Bot Discord] ✅ Ligado como {discord_bot.user}")
+
+    @discord_bot.event
+    async def on_raw_reaction_add(payload):
+        """Quando alguem reage a uma mensagem de feedback."""
+        global WEIGHTS
+        # So processa reacoes do dono (tu) no canal de feedback
+        if str(payload.emoji) not in ("👍", "👎", "😐"): return
+        mint = feedback_messages.get(payload.message_id)
+        if not mint: return
+        data = pending_feedback.get(mint)
+        if not data: return
+
+        emoji   = str(payload.emoji)
+        name    = data["name"]
+        signals = data.get("signals", [])
+        score   = data.get("score", 0)
+
+        if emoji == "👍":
+            # Boa call - reforca os sinais ativos
+            factor = 0.10
+            for sig in signals:
+                if sig in WEIGHTS:
+                    cur = WEIGHTS[sig]
+                    WEIGHTS[sig] = max(5.0, min(30.0, cur + abs(cur) * factor)) if cur > 0 else cur
+            feedback_type = "✅ BOA CALL"
+            color = 0x00ff88
+            print(f"[Feedback] 👍 {name} - pesos reforçados: {signals}")
+
+        elif emoji == "👎":
+            # Ma call - penaliza os sinais ativos
+            factor = 0.10
+            for sig in signals:
+                if sig in WEIGHTS:
+                    cur = WEIGHTS[sig]
+                    WEIGHTS[sig] = max(5.0, min(30.0, cur - abs(cur) * factor)) if cur > 0 else cur
+            feedback_type = "❌ MÁ CALL"
+            color = 0xff4444
+            print(f"[Feedback] 👎 {name} - pesos penalizados: {signals}")
+
+        else:
+            feedback_type = "😐 NEUTRO"
+            color = 0x888888
+            print(f"[Feedback] 😐 {name} - sem ajuste de pesos")
+
+        save_weights(WEIGHTS)
+        pending_feedback.pop(mint, None)
+
+        # Confirma o feedback com uma mensagem
+        if FEEDBACK_WEBHOOK_URL:
+            try:
+                async with aiohttp.ClientSession() as s:
+                    await s.post(FEEDBACK_WEBHOOK_URL, json={"embeds": [{
+                        "title": f"{feedback_type} — {name}",
+                        "description": f"Feedback registado. Pesos ajustados.",
+                        "color": color,
+                        "footer": {"text": "First Call Bot • Feedback processado"}
+                    }]}, timeout=aiohttp.ClientTimeout(total=5))
+            except: pass
+
+    @discord_bot.command(name="stats")
+    async def stats_cmd(ctx):
+        """!stats - mostra win rate atual"""
+        total = wins_total + losses_total
+        wr    = f"{wins_total/total*100:.0f}%" if total > 0 else "N/A"
+        await ctx.send(
+            f"📊 **First Call Stats**\n"
+            f"Wins: **{wins_total}** | Losses: **{losses_total}**\n"
+            f"Win Rate: **{wr}**\n"
+            f"Alertas enviados: **{alerts_sent}**"
+        )
+
+    @discord_bot.command(name="score")
+    async def score_cmd(ctx, *, coin_name: str = ""):
+        """!score NOME - mostra o score de uma moeda alertada"""
+        if not coin_name:
+            await ctx.send("Usa: `!score NOME`")
+            return
+        found = None
+        for mint, d in token_data.items():
+            if coin_name.upper() in d.get("name","").upper() or coin_name.upper() in d.get("symbol","").upper():
+                found = (mint, d)
+                break
+        if not found:
+            await ctx.send(f"❌ `{coin_name}` não encontrado")
+            return
+        mint, d = found
+        analysis = calculate_confidence(mint)
+        await ctx.send(
+            f"🔍 **{d.get('name','?')}** — Score: **{min(analysis['score'],100)}%**\n"
+            f"MCap: ${d.get('market_cap',0)/1000:.0f}K | Liq: ${d.get('liquidity',0)/1000:.0f}K\n"
+            f"[Chart](https://dexscreener.com/solana/{mint})"
+        )
+
+    try:
+        await discord_bot.start(DISCORD_BOT_TOKEN)
+    except Exception as e:
+        print(f"[Bot Discord] ❌ Erro: {e}")
+
 async def raydium_migration_scanner():
     """
     Deteta moedas que migraram do pump.fun para Raydium.
@@ -3581,6 +3718,7 @@ async def main():
         dexscreener_scanner(),
         update_loop(),
         maintenance_loop(),
+        start_discord_bot(),
     )
 
 if __name__ == "__main__":
