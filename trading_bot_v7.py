@@ -1135,8 +1135,9 @@ def calculate_confidence(mint):
     if bundled_check   > 20:   red_flags += 1
     if sniper_check    > 10:   red_flags += 1
     if lp_burned_check is not None and lp_burned_check > 0 and lp_burned_check < 95: red_flags += 1
+    if d.get("low_fees") is True: red_flags += 1  # fees < 10% MCap = token suspeito
 
-    if red_flags >= 2:
+    if red_flags >= 1:
         score = 0
         signals.append(f"🚫 {red_flags} red flags ({top10_pct_check:.0f}% top10 | {bundled_check:.0f}% bundle | {sniper_check:.0f}% snipers | LP {lp_burned_check:.0f if lp_burned_check is not None else 'N/A'}%) - BLOQUEADO")
         return {"score": 0, "signals": signals, "verdict": "❌ BLOCKED - too many red flags", "category": "FRACO",
@@ -1635,6 +1636,10 @@ async def enrich_token_helius(mint):
         else:
             d["low_fees"] = False
             print(f"[Fees] ✅ {d.get('name','?')} - fees OK: ${fee_usd:.0f} ({fee_sol:.2f} SOL) vs MCap ${mcap:.0f}")
+    else:
+        # Nao conseguiu verificar fees - marca como suspeito
+        d["low_fees"] = True
+        print(f"[Fees] ⚠️ {d.get('name','?')} - fees nao verificadas - bloqueado por precaucao")
 
     # Verifica histrico do dev
     dev_wallet = token_dev_wallet.get(mint, "")
