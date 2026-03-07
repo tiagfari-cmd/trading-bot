@@ -15,7 +15,8 @@ BOT_VERSION  = "v11.8.4 - 03/03/2026"
 # Muda este valor sempre que fizeres update para identificar a versao a correr
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
-RESULTS_WEBHOOK_URL = os.environ.get("RESULTS_WEBHOOK_URL", "")  # canal #resultados
+RESULTS_WEBHOOK_URL  = os.environ.get("RESULTS_WEBHOOK_URL", "")   # canal #resultados
+FEEDBACK_WEBHOOK_URL = os.environ.get("FEEDBACK_WEBHOOK_URL", "")  # canal privado #bot-feedback
 UPDATES_WEBHOOK_URL = os.environ.get("UPDATES_WEBHOOK_URL", "https://discord.com/api/webhooks/1478433729138524190/8vUIr3XuGB0fmMyHyuJJempgc3lNQr8YPZvEVjJxLWeLbfGhirQATrfHVY8aw5Ms1psL")  # canal #updates
 JSONBIN_KEY         = os.environ.get("JSONBIN_KEY", "")            # JSONBin X-Master-Key
 JSONBIN_ID          = os.environ.get("JSONBIN_ID", "")             # JSONBin Bin ID
@@ -277,7 +278,8 @@ def cleanup_alerted():
         save_alerted()
         print(f"[Cleanup] alerted_tokens reduzido para {len(alerted_tokens)} entradas")
 
-alerted_tokens = load_alerted()  # <- NUNCA repete, mesmo aps reiniciar
+alerted_tokens   = load_alerted()  # <- NUNCA repete, mesmo aps reiniciar
+pending_feedback = {}  # mint -> {name, alert_time, score, signals} aguarda feedback teu
 
 # -- BLACKLIST - moedas j conhecidas/que j explodiram --------
 # Estas moedas nunca sero alertadas (j atingiram o seu pico)
@@ -1944,6 +1946,15 @@ async def send_discord_alert(mint, analysis, price, source="pump.fun"):
                 if r.status in (200, 204):
                     alerts_sent += 1
                     sent = True
+                    # Pede feedback 24h depois num canal privado
+                    if FEEDBACK_WEBHOOK_URL:
+                        asyncio.create_task(send_feedback_request(
+                            mint,
+                            d.get("name", "?"),
+                            analysis["score"],
+                            analysis.get("active_signals", []),
+                            price
+                        ))
                     print(f"[Discord] ✅ #{alerts_sent} - {d.get('name','?')} score:{analysis['score']}% mcap:${mcap/1000:.0f}K via {source}")
                     break
                 elif r.status == 429:  # rate limit
@@ -2490,6 +2501,46 @@ async def _process_dex_pairs(pairs, source):
         await process_trade(msg, source=source)
         count += 1
     return count
+
+
+async def send_feedback_request(mint, name, score, signals, alert_price):
+    """
+    Envia pedido de feedback para o canal privado #bot-feedback.
+    Usa componentes Discord (botoes) para tu clicares.
+    Como o Discord nao aceita botoes via webhook normal, envia uma mensagem
+    simples com instrucoes para responderes com !good, !bad ou !neutral
+    no canal de feedback.
+    """
+    if not FEEDBACK_WEBHOOK_URL: return
+    pending_feedback[mint] = {
+        "name":       name,
+        "score":      score,
+        "signals":    signals[:3],  # top 3 sinais
+        "alert_time": time.time(),
+        "alert_price": alert_price,
+    }
+    top_signals = " | ".join(signals[:3]) if signals else "N/A"
+    try:
+        async with aiohttp.ClientSession() as s:
+            await s.post(FEEDBACK_WEBHOOK_URL, json={"embeds": [{
+                "title": f"📋 Feedback Request — {name}",
+                "description": (
+                    f"Score: **{min(score,100)}%** | Price: `${alert_price:.8f}`\n"
+                    f"Signals: {top_signals}\n\n"
+                    f"[Chart](https://dexscreener.com/solana/{mint})\n\n"
+                    f"**React to this message:**\n"
+                    f"👍 = Boa call\n"
+                    f"👎 = Má call\n"
+                    f"😐 = Neutro\n\n"
+                    f"*(mint: `{mint[:16]}...`)*"
+                ),
+                "color": 0x7289da,
+                "footer": {"text": f"First Call Bot • Feedback • {name}"},
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }]}, timeout=aiohttp.ClientTimeout(total=5))
+        print(f"[Feedback] ✅ Pedido enviado para {name}")
+    except Exception as e:
+        print(f"[Feedback] ❌ Erro: {e}")
 
 async def raydium_migration_scanner():
     """
