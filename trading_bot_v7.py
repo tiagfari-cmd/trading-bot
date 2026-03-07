@@ -1131,12 +1131,12 @@ def calculate_confidence(mint):
     sniper_check    = d.get("sniper_pct", 0)
     lp_burned_check = d.get("lp_burned_pct", None)
 
-    if top10_pct_check > 15:   red_flags += 1
-    if bundled_check   > 30:   red_flags += 1
+    if top10_pct_check > 25:   red_flags += 1
+    if bundled_check   > 20:   red_flags += 1
     if sniper_check    > 10:   red_flags += 1
-    if lp_burned_check is not None and lp_burned_check < 95: red_flags += 1
+    if lp_burned_check is not None and lp_burned_check > 0 and lp_burned_check < 95: red_flags += 1
 
-    if red_flags >= 1:
+    if red_flags >= 2:
         score = 0
         signals.append(f"🚫 {red_flags} red flags ({top10_pct_check:.0f}% top10 | {bundled_check:.0f}% bundle | {sniper_check:.0f}% snipers | LP {lp_burned_check:.0f if lp_burned_check is not None else 'N/A'}%) - BLOQUEADO")
         return {"score": 0, "signals": signals, "verdict": "❌ BLOCKED - too many red flags", "category": "FRACO",
@@ -2307,23 +2307,23 @@ async def process_trade(msg, source="pump.fun"):
 
     if qualifies:
         # Verifica se os dados do Helius ja chegaram (top10, bundle, lp_burned)
-        # Se nao chegaram ainda, aguarda ate 8 segundos antes de alertar
+        # Aguarda maximo 3 segundos - nao bloqueia alertas por muito tempo
         helius_ready = d.get("top10_pct", 0) > 0 or d.get("holders", 0) > 0
         if not helius_ready:
-            print(f"  [aguarda] {d.get('name','?')} - a aguardar dados Helius...")
-            for _ in range(8):
+            for _ in range(3):
                 await asyncio.sleep(1)
                 if d.get("top10_pct", 0) > 0 or d.get("holders", 0) > 0:
                     break
-            # Re-analisa com dados completos
-            analysis = calculate_confidence(mint)
-            cat      = analysis.get("category")
-            qualifies = (cat in CONFIG["min_category"] and
-                         analysis["score"] >= min_score and
-                         not analysis.get("blocked", False))
-            if not qualifies:
-                print(f"  [skip apos helius] {d.get('name','?')} — {analysis.get('verdict','')}")
-                return
+            # Re-analisa com dados completos se chegaram
+            if d.get("top10_pct", 0) > 0 or d.get("holders", 0) > 0:
+                analysis = calculate_confidence(mint)
+                cat      = analysis.get("category")
+                qualifies = (cat in CONFIG["min_category"] and
+                             analysis["score"] >= min_score and
+                             not analysis.get("blocked", False))
+                if not qualifies:
+                    print(f"  [skip apos helius] {d.get('name','?')} — {analysis.get('verdict','')}")
+                    return
 
     if qualifies:
         # -- ALERTA 24/7 - hot window ou no --
@@ -2485,6 +2485,73 @@ async def _process_dex_pairs(pairs, source):
         await process_trade(msg, source=source)
         count += 1
     return count
+
+async def raydium_migration_scanner():
+    """
+    Deteta moedas que migraram do pump.fun para Raydium.
+    Este é o momento mais importante - quando uma moeda atinge o bonding curve
+    e passa para Raydium o volume explode quase sempre.
+    Usa o WebSocket do pumpportal para eventos de migração.
+    """
+    url             = "wss://pumpportal.fun/api/data"
+    reconnect_delay = 1
+    max_delay       = 30
+    migrations_seen = set()
+
+    print("[Raydium] Iniciando scanner de migrações pump.fun → Raydium...")
+    while True:
+        try:
+            async with websockets.connect(
+                url,
+                ping_interval=10,
+                ping_timeout=8,
+                close_timeout=3,
+                open_timeout=15,
+                max_size=2**23,
+            ) as ws:
+                # Subscreve especificamente a eventos de migração
+                await ws.send(json.dumps({"method": "subscribeMigration"}))
+                print("[Raydium] ✅ Subscrito a migrações pump.fun → Raydium")
+
+                async for raw in ws:
+                    try:
+                        msg = json.loads(raw)
+                        mint = msg.get("mint") or msg.get("token")
+                        if not mint or mint in migrations_seen: continue
+                        if mint in alerted_tokens: continue
+
+                        migrations_seen.add(mint)
+                        if len(migrations_seen) > 5000:
+                            migrations_seen.clear()
+
+                        name   = msg.get("name", "?")
+                        symbol = msg.get("symbol", "?")
+                        print(f"  [Raydium Migration] {name} ({symbol}) - {mint[:8]}...")
+
+                        # Enriquece com dados DexScreener imediatamente
+                        init_token(mint)
+                        d = token_data[mint]
+                        d["source"]       = "raydium_migration"
+                        d["name"]         = name
+                        d["symbol"]       = symbol
+                        d["pair_age_hours"] = 0  # acabou de migrar - token muito novo
+
+                        asyncio.create_task(enrich_token_from_dex(mint))
+                        asyncio.create_task(enrich_token_helius(mint))
+
+                        # Aguarda 5s para dados chegarem antes de analisar
+                        await asyncio.sleep(5)
+
+                        trade_msg = {"mint": mint, "name": name, "symbol": symbol}
+                        await process_trade(trade_msg, source="raydium_migration")
+
+                    except Exception as e:
+                        print(f"[Raydium] Erro a processar msg: {e}")
+
+        except Exception as e:
+            reconnect_delay = min(reconnect_delay * 1.5, max_delay)
+            print(f"[Raydium] Falha - {type(e).__name__} - reconectando em {reconnect_delay:.0f}s...")
+            await asyncio.sleep(reconnect_delay)
 
 async def dexscreener_scanner():
     """Polling multi-endpoint DexScreener - backup total ao WebSocket pump.fun."""
@@ -3454,6 +3521,7 @@ async def main():
         keepalive_server(),
         pumpfun_scanner(),
         pumpfun_watchdog(),
+        raydium_migration_scanner(),
         dexscreener_scanner(),
         update_loop(),
         maintenance_loop(),
