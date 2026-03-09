@@ -288,7 +288,39 @@ def cleanup_alerted():
         print(f"[Cleanup] alerted_tokens reduzido para {len(alerted_tokens)} entradas")
 
 alerted_tokens   = load_alerted()  # <- NUNCA repete, mesmo aps reiniciar
+load_threshold_data()
 pending_feedback = {}  # mint -> {name, alert_time, score, signals} aguarda feedback teu
+
+# -- THRESHOLD DINAMICO - ajusta min_confidence baseado em moedas que subiram +100% --
+scores_100x   = []   # scores das moedas alertadas que subiram +100% nas 24h
+_threshold_file = os.path.join(DATA_DIR, "threshold_data.json") if "DATA_DIR" in dir() else "threshold_data.json"
+
+def load_threshold_data():
+    global scores_100x
+    try:
+        if os.path.exists(_threshold_file):
+            data = json.load(open(_threshold_file))
+            scores_100x = data.get("scores_100x", [])
+            print(f"[Threshold] Carregados {len(scores_100x)} scores historicos")
+    except: pass
+
+def save_threshold_data():
+    try:
+        json.dump({"scores_100x": scores_100x[-100:]}, open(_threshold_file, "w"))
+    except: pass
+
+def calc_dynamic_threshold():
+    """
+    Calcula o threshold dinamico baseado na media dos scores de moedas +100%.
+    < 10 moedas: media + 10% de margem (mais restritivo, menos dados)
+    >= 10 moedas: media + 5% de margem (mais afinado)
+    """
+    if not scores_100x:
+        return CONFIG["min_confidence"]  # sem dados ainda, usa o default
+    avg = sum(scores_100x) / len(scores_100x)
+    margin = 10 if len(scores_100x) < 10 else 5
+    threshold = max(55, int(avg - margin))  # nunca desce abaixo de 55
+    return threshold
 
 # -- BLACKLIST - moedas j conhecidas/que j explodiram --------
 # Estas moedas nunca sero alertadas (j atingiram o seu pico)
@@ -2426,7 +2458,8 @@ async def process_trade(msg, source="pump.fun"):
 
     # -- GUARDA MOEDAS IGNORADAS para aprender com oportunidades perdidas --
     hot_now_skip = is_hot_window()
-    min_score_skip = CONFIG["min_confidence"] if hot_now_skip else CONFIG["min_confidence"] + 5
+    dyn_threshold  = calc_dynamic_threshold()
+    min_score_skip = dyn_threshold if hot_now_skip else dyn_threshold + 5
     if (cat not in CONFIG["min_category"] or
             analysis["score"] < min_score_skip or
             analysis.get("blocked", False)):
@@ -2448,7 +2481,7 @@ async def process_trade(msg, source="pump.fun"):
     hot_now    = is_hot_window()
     # Fora da janela exige score mais alto (mercado mais fraco de dia)
     # +12 fora janela para compensar filtro de liquidez mais baixo
-    min_score  = CONFIG["min_confidence"] if hot_now else CONFIG["min_confidence"] + 5
+    min_score  = calc_dynamic_threshold() if hot_now else calc_dynamic_threshold() + 5
 
     qualifies = (cat in CONFIG["min_category"] and
                  analysis["score"] >= min_score and
@@ -3217,6 +3250,17 @@ async def learn_from_skipped():
                 wins_total += 1
             else:
                 losses_total += 1
+
+            # Regista score se moeda subiu +100% - alimenta threshold dinamico
+            alert_score_r = chk.get("alert_score", 0)
+            if peak_pct_final >= 100 and alert_score_r > 0:
+                scores_100x.append(alert_score_r)
+                scores_100x[:] = scores_100x[-100:]  # guarda max 100
+                save_threshold_data()
+                new_threshold = calc_dynamic_threshold()
+                if new_threshold != CONFIG["min_confidence"]:
+                    CONFIG["min_confidence"] = new_threshold
+                    print(f"[Threshold] ✅ Novo threshold: {new_threshold}% (media de {len(scores_100x)} moedas +100%)")
 
             # Envia resultado final para #resultados apos 24h
             if peak_pct_final >= 10 and not chk.get("results_sent", False):
