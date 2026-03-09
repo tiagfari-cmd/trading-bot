@@ -24,7 +24,8 @@ BOT_VERSION  = "v11.8.4 - 03/03/2026"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "COLA_AQUI_O_TEU_WEBHOOK_URL")
 RESULTS_WEBHOOK_URL  = os.environ.get("RESULTS_WEBHOOK_URL", "")   # canal #resultados
 FEEDBACK_WEBHOOK_URL = os.environ.get("FEEDBACK_WEBHOOK_URL", "")  # canal privado #bot-feedback
-DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")  # token do bot Discord
+MOD_LOG_WEBHOOK_URL  = os.environ.get("MOD_LOG_WEBHOOK_URL", "")   # canal privado #mod-log
+DISCORD_BOT_TOKEN = os.environ.get("BOT_DISCORD_TOKEN", "")  # token do bot Discord
 UPDATES_WEBHOOK_URL = os.environ.get("UPDATES_WEBHOOK_URL", "https://discord.com/api/webhooks/1478433729138524190/8vUIr3XuGB0fmMyHyuJJempgc3lNQr8YPZvEVjJxLWeLbfGhirQATrfHVY8aw5Ms1psL")  # canal #updates
 JSONBIN_KEY         = os.environ.get("JSONBIN_KEY", "")            # JSONBin X-Master-Key
 JSONBIN_ID          = os.environ.get("JSONBIN_ID", "")             # JSONBin Bin ID
@@ -326,6 +327,43 @@ SKIP_CHECK_AFTER  = 3600  # verifica 1h depois se subiu
 STATE_FILE       = f"{DATA_DIR}/bot_state.json"
 bot_start_time   = time.time()   # quando o bot arrancou esta sesso
 last_state_save  = 0             # ultimo snapshot de estado
+
+async def _save_pending_checks_now():
+    """Guarda só o pending_checks no JSONBin imediatamente após alerta.
+    Muito mais eficiente - 1 request por alerta em vez de a cada 5 minutos."""
+    if not JSONBIN_KEY or not JSONBIN_ID: return
+    try:
+        now = time.time()
+        # Merge com estado existente no JSONBin - nao sobrescreve pesos/padroes
+        existing = {}
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                JSONBIN_URL,
+                headers={"X-Master-Key": JSONBIN_KEY},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    existing = data.get("record", {})
+
+        existing["pending_checks"] = {
+            mint: {k: (list(v) if isinstance(v, set) else v) for k, v in data.items()}
+            for mint, data in list(pending_checks.items())
+            if now < data.get("monitor_until", 0)
+        }
+        existing["saved_at"] = now
+
+        async with aiohttp.ClientSession() as s:
+            async with s.put(
+                JSONBIN_URL,
+                json=existing,
+                headers={"X-Master-Key": JSONBIN_KEY, "Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as r:
+                await r.read()
+        print(f"[JSONBin] ✅ pending_checks guardado após alerta ({len(pending_checks)} moedas)")
+    except Exception as e:
+        print(f"[JSONBin] Erro ao guardar pending_checks: {e}")
 
 async def save_state_cloud():
     """Guarda estado no JSONBin - persiste entre deploys."""
@@ -1140,6 +1178,8 @@ def calculate_confidence(mint):
     bundled_check   = d.get("bundled_pct", 0)
     sniper_check    = d.get("sniper_pct", 0)
     lp_burned_check = d.get("lp_burned_pct", None)
+    mcap_check      = d.get("market_cap", 0)
+    vol24h_check    = d.get("vol_24h", 0)
 
     if top10_pct_check > 25:   red_flags += 1
     if bundled_check   > 20:   red_flags += 1
@@ -1147,9 +1187,23 @@ def calculate_confidence(mint):
     if lp_burned_check is not None and lp_burned_check > 0 and lp_burned_check < 95: red_flags += 1
     if d.get("low_fees") is True: red_flags += 1  # fees < 10% MCap = token suspeito
 
+    # BLOQUEIO DIRETO - volume < MCap = preço manipulado
+    if mcap_check > 0 and vol24h_check > 0 and vol24h_check < mcap_check:
+        signals.append(f"🚫 BLOCKED — low vol (${vol24h_check/1000:.0f}K vol < ${mcap_check/1000:.0f}K mcap)")
+        return {"score": 0, "signals": signals, "verdict": "❌ BLOCKED - fake volume", "category": "FRACO",
+                "active_signals": active, "blocked": True}
+
     if red_flags >= 1:
         score = 0
-        signals.append(f"🚫 {red_flags} red flags ({top10_pct_check:.0f}% top10 | {bundled_check:.0f}% bundle | {sniper_check:.0f}% snipers | LP {lp_burned_check:.0f if lp_burned_check is not None else 'N/A'}%) - BLOQUEADO")
+        fake_vol = vol24h_check > mcap_check * 2 if mcap_check > 0 else False
+        block_reasons = []
+        if top10_pct_check > 25:  block_reasons.append(f"top10 {top10_pct_check:.0f}%")
+        if bundled_check   > 20:  block_reasons.append(f"bundle {bundled_check:.0f}%")
+        if sniper_check    > 10:  block_reasons.append(f"snipers {sniper_check:.0f}%")
+        if lp_burned_check is not None and lp_burned_check > 0 and lp_burned_check < 95: block_reasons.append(f"LP {lp_burned_check:.0f}%")
+        if d.get("low_fees") is True: block_reasons.append("low fees")
+        if fake_vol: block_reasons.append(f"low vol (${vol24h_check/1000:.0f}K vol < ${mcap_check/1000:.0f}K mcap)")
+        signals.append(f"🚫 BLOCKED — {' | '.join(block_reasons)}")
         return {"score": 0, "signals": signals, "verdict": "❌ BLOCKED - too many red flags", "category": "FRACO",
                 "active_signals": active, "blocked": True}
 
@@ -1540,6 +1594,60 @@ async def fetch_price_helius(mint):
     except Exception:
         return None
 
+
+async def fetch_rugcheck(mint):
+    """
+    Verifica token via RugCheck API - gratuito, sem key, dados proximos do Axiom.
+    Retorna: score de risco, fees, LP burned, bundle, top holders.
+    """
+    try:
+        url = f"https://api.rugcheck.xyz/v1/tokens/{mint}/report"
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status != 200: return None
+                data = await r.json()
+
+        if not data: return None
+
+        result = {}
+
+        # Score de risco (0-1000, menor = mais seguro)
+        result["rugcheck_score"] = data.get("score", 999)
+
+        # Top holders
+        top_holders = data.get("topHolders", [])
+        if top_holders:
+            top10_pct = sum(h.get("pct", 0) for h in top_holders[:10]) * 100
+            result["top10_pct"] = top10_pct
+
+        # LP burned
+        markets = data.get("markets", [])
+        for market in markets:
+            lp = market.get("lp", {})
+            lp_burned_pct = lp.get("lpBurnedPct", None)
+            if lp_burned_pct is not None:
+                result["lp_burned_pct"] = lp_burned_pct * 100
+                break
+
+        # Risks - verifica flags criticos
+        risks = data.get("risks", [])
+        risk_names = [r.get("name", "").lower() for r in risks]
+        result["is_mintable"]     = any("mint" in r for r in risk_names)
+        result["is_freezable"]    = any("freeze" in r for r in risk_names)
+        result["has_bundle"]      = any("bundle" in r for r in risk_names)
+        result["low_liquidity"]   = any("liquidity" in r for r in risk_names)
+
+        # Creator/dev info
+        creator = data.get("creator", "")
+        result["creator"] = creator
+
+        print(f"[RugCheck] ✅ {data.get('tokenMeta', {}).get('symbol','?')} — score:{result['rugcheck_score']} | top10:{result.get('top10_pct',0):.0f}% | LP:{result.get('lp_burned_pct','N/A')}")
+        return result
+
+    except Exception as e:
+        print(f"[RugCheck] Erro: {e}")
+        return None
+
 async def fetch_pool_fees(mint):
     """
     Verifica fees do par via Helius - logica real.
@@ -1621,7 +1729,24 @@ async def fetch_dev_token_count(dev_wallet):
     except: return 0
 
 async def enrich_token_helius(mint):
-    """Enriquece token com dados Helius para afinacao automatica."""
+    """Enriquece token com dados Helius + RugCheck para afinacao automatica."""
+    # RugCheck primeiro - gratuito, sem key, dados proximos do Axiom
+    rug = await fetch_rugcheck(mint)
+    if rug:
+        d = token_data.get(mint, {})
+        if not d: init_token(mint); d = token_data[mint]
+        # So usa RugCheck se Helius ainda nao tem dados
+        if rug.get("top10_pct") and d.get("top10_pct", 0) == 0:
+            d["top10_pct"] = rug["top10_pct"]
+        if rug.get("lp_burned_pct") is not None and d.get("lp_burned_pct") is None:
+            d["lp_burned_pct"] = rug["lp_burned_pct"]
+        if rug.get("has_bundle") and d.get("bundled_pct", 0) == 0:
+            d["bundled_pct"] = 35  # bundle confirmado pelo RugCheck
+        # Mint e freeze authorities = bloqueio direto
+        if rug.get("is_mintable") or rug.get("is_freezable"):
+            d["low_fees"] = True  # reutiliza flag de bloqueio
+            print(f"[RugCheck] 🚫 {d.get('name','?')} - mintable/freezable = BLOQUEADO")
+
     data = await fetch_helius_data(mint)
     if not data: return
     d = token_data.get(mint)
@@ -2385,6 +2510,11 @@ async def process_trade(msg, source="pump.fun"):
             "last_vol_check":      now,        # ultimo check de volume
             "last_vol_value":      0,          # volume da ultima verificacao
         }
+
+        # Guarda pending_checks no JSONBin imediatamente apos alerta
+        # So gasta 1 request por alerta - muito mais eficiente que guardar tudo periodicamente
+        if JSONBIN_KEY and JSONBIN_ID:
+            asyncio.create_task(_save_pending_checks_now())
 
 # ---------------------------------------------
 #   WEBSOCKET - pump.fun
@@ -3584,8 +3714,8 @@ async def maintenance_loop():
                 del viral_themes[t]
                 print(f"[ViralTema] Tema '{t}' expirou")
 
-        # Guarda estado a cada 60s - recupera apos crash
-        if int(now) % 60 < 31:
+        # Guarda estado a cada 5 min - reduz falso downtime
+        if int(now) % 300 < 31:
             save_state()
 
         # Guarda estado na cloud a cada 5 min - persiste entre deploys (~8.600 requests/mes)
@@ -3627,6 +3757,47 @@ async def keepalive_server():
     await site.start()
     print(f"[KeepAlive] Servidor HTTP ativo na porta {port}")
 
+
+async def recover_missed_results():
+    """
+    Apos reinicio, verifica moedas alertadas que estavam a ser monitorizadas.
+    Vai ao DexScreener buscar o preco atual e regista no track-record se subiram.
+    Evita perder resultados quando o bot reinicia.
+    """
+    if not pending_checks:
+        print("[Recovery] Sem moedas pendentes para recuperar")
+        return
+
+    now = time.time()
+    recovered = 0
+    print(f"[Recovery] A verificar {len(pending_checks)} moedas alertadas antes do restart...")
+
+    for mint, chk in list(pending_checks.items()):
+        alert_price = chk.get("alert_price", 0)
+        alert_time  = chk.get("alert_time", 0)
+        name        = chk.get("name", "?")
+        if alert_price <= 0: continue
+        # So recupera moedas alertadas nas ultimas 24h
+        if now - alert_time > 86400: continue
+
+        try:
+            dex = await fetch_dexscreener(mint)
+            if not dex or dex.get("price", 0) <= 0: continue
+            current_price = dex["price"]
+            change_pct    = (current_price - alert_price) / alert_price * 100
+
+            # Atualiza peak se subiu
+            if change_pct > chk.get("peak_change", 0):
+                chk["peak_change"] = change_pct
+                print(f"[Recovery] {name} — pico recuperado: +{change_pct:.0f}%")
+                recovered += 1
+
+            await asyncio.sleep(0.5)  # nao sobrecarrega a API
+        except Exception as e:
+            print(f"[Recovery] Erro em {name}: {e}")
+
+    print(f"[Recovery] ✅ {recovered} moedas recuperadas")
+
 async def main():
     print("=" * 60)
     print(f"  TRADING BOT {BOT_VERSION}")
@@ -3643,33 +3814,59 @@ async def main():
     print(f"  Log        : {CONFIG['log_file']}")
     print("=" * 60 + "\n")
 
+    # -- NOTIFICA MOD-LOG QUE O BOT REINICIOU --------------------
+    if MOD_LOG_WEBHOOK_URL:
+        try:
+            import datetime as dt
+            now_str = dt.datetime.now().strftime("%d/%m/%Y às %H:%M")
+            async with aiohttp.ClientSession() as s:
+                await s.post(MOD_LOG_WEBHOOK_URL, json={"embeds": [{
+                    "title": "🔄 Bot reiniciado",
+                    "description": f"First Call Bot está online.\n`{BOT_VERSION}`\n\n🕐 {now_str}",
+                    "color": 0x5865f2,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }]}, timeout=aiohttp.ClientTimeout(total=5))
+        except Exception as e:
+            print(f"[ModLog] Erro: {e}")
+
     # -- CARREGA ESTADO DA CLOUD (JSONBin) --------------------
     cloud_loaded = await load_state_cloud()
     if cloud_loaded:
         print(f"[JSONBin] Estado cloud carregado: {len(pattern_history)} padroes, {learns_done} aprendizagens")
+        # Recupera resultados de moedas que estavam a ser monitorizadas antes do restart
+        await recover_missed_results()
 
-    # -- DETEO DE CRASH - verifica se houve downtime ----------
+    # -- DETECAO DE CRASH - verifica se houve downtime ----------
     last_state = load_last_state()
     if last_state:
         saved_at    = last_state.get("saved_at", 0)
         downtime    = time.time() - saved_at
-        downtime_m  = int(downtime / 60)
+        downtime_h  = int(downtime / 3600)
+        downtime_m  = int((downtime % 3600) / 60)
         downtime_s  = int(downtime % 60)
 
+        if downtime_h > 0:
+            downtime_str = f"{downtime_h}h {downtime_m}m"
+        elif downtime_m > 0:
+            downtime_str = f"{downtime_m}m {downtime_s}s"
+        else:
+            downtime_str = f"{downtime_s}s"
+
         if downtime > 90:  # mais de 90s = provavelmente crashou
-            print(f"[Crash] ?? Downtime detetado - esteve em baixo {downtime_m}m {downtime_s}s")
-            # Avisa no Discord
-            if "COLA" not in DISCORD_WEBHOOK_URL:
+            print(f"[Crash] ⚠️ Downtime detetado - esteve em baixo {downtime_str}")
+            # Avisa no mod-log
+            target_url = MOD_LOG_WEBHOOK_URL if MOD_LOG_WEBHOOK_URL else ""
+            if target_url:
                 crash_desc = (
-                    "O bot esteve em baixo **" + str(downtime_m) + "m " + str(downtime_s) + "s**.\n\n"
-                    + "Ultima sessao tinha:\n"
-                    + "- " + str(last_state.get("alerts_sent",0)) + " alertas enviados\n"
-                    + "- " + str(last_state.get("learns_done",0)) + " aprendizagens\n"
-                    + "- " + str(last_state.get("patterns_count",0)) + " padroes guardados\n\n"
-                    + "Bot a retomar operacao normal..."
+                    f"O bot esteve em baixo **{downtime_str}**.\n\n"
+                    f"Última sessão tinha:\n"
+                    f"- {last_state.get('alerts_sent',0)} alertas enviados\n"
+                    f"- {last_state.get('learns_done',0)} aprendizagens\n"
+                    f"- {last_state.get('patterns_count',0)} padrões guardados\n\n"
+                    f"Bot a retomar operação normal..."
                 )
                 crash_embed = {
-                    "title":       "BOT REINICIOU",
+                    "title":       "⚠️ Bot reiniciou após downtime",
                     "description": crash_desc,
                     "color": 0xff9900,
                     "footer": {"text": "First Call Bot"},
@@ -3677,14 +3874,14 @@ async def main():
                 }
                 try:
                     async with aiohttp.ClientSession() as s:
-                        await s.post(DISCORD_WEBHOOK_URL,
+                        await s.post(target_url,
                                     json={"embeds": [crash_embed]},
                                     timeout=aiohttp.ClientTimeout(total=5))
-                    print("[Crash] ? Aviso de downtime enviado ao Discord")
+                    print("[Crash] ✅ Aviso de downtime enviado ao mod-log")
                 except Exception as e:
                     print(f"[Crash] Erro Discord: {e}")
         else:
-            print(f"[Estado] Reinicio normal ({downtime_s}s)")
+            print(f"[Estado] Reinicio normal ({downtime_str})")
     else:
         print("[Estado] Primeiro arranque - sem estado anterior")
 
