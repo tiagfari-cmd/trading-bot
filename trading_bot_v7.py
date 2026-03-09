@@ -288,7 +288,6 @@ def cleanup_alerted():
         print(f"[Cleanup] alerted_tokens reduzido para {len(alerted_tokens)} entradas")
 
 alerted_tokens   = load_alerted()  # <- NUNCA repete, mesmo aps reiniciar
-load_threshold_data()
 pending_feedback = {}  # mint -> {name, alert_time, score, signals} aguarda feedback teu
 
 # -- THRESHOLD DINAMICO - ajusta min_confidence baseado em moedas que subiram +100% --
@@ -321,6 +320,8 @@ def calc_dynamic_threshold():
     margin = 10 if len(scores_100x) < 10 else 5
     threshold = max(55, int(avg - margin))  # nunca desce abaixo de 55
     return threshold
+
+load_threshold_data()
 
 # -- BLACKLIST - moedas j conhecidas/que j explodiram --------
 # Estas moedas nunca sero alertadas (j atingiram o seu pico)
