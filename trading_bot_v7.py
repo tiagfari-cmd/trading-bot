@@ -3046,65 +3046,6 @@ async def update_loop():
                     await send_discord_movement(mint, data, current_price, pct, "up", milestone, dex)
                     break  # um marco por ciclo
 
-            # -- DETEO DE RE-ACELERAO APS CONSOLIDAO --
-            # Se a moeda parou e volta a acelerar, avisa
-            if not data.get("reaccel_alerted"):
-                # Deteta consolidao - ficou entre peak-30% e peak+5% por algum tempo
-                if peak_pct >= 20:  # s monitoriza se j subiu pelo menos 20%
-                    consolidation_zone_low  = peak_pct * 0.70   # 30% abaixo do pico
-                    consolidation_zone_high = peak_pct * 1.05   # 5% acima do pico
-
-                    if consolidation_zone_low <= pct <= consolidation_zone_high:
-                        # Est na zona de consolidao
-                        if data.get("consolidation_start") is None:
-                            data["consolidation_start"] = now
-                            data["consolidation_low"]   = pct
-                        else:
-                            # Atualiza mnimo da consolidao
-                            if pct < data.get("consolidation_low", pct):
-                                data["consolidation_low"] = pct
-                    else:
-                        # Saiu da zona de consolidao
-                        consol_start = data.get("consolidation_start")
-                        consol_duration = (now - consol_start) if consol_start else 0
-
-                        if consol_start and consol_duration >= 1800:  # consolidou pelo menos 30 min
-                            # Verifica se est a re-acelerar para cima
-                            if pct > peak_pct * 1.10:  # superou o pico anterior em +10%
-                                data["reaccel_alerted"]     = True
-                                data["consolidation_start"] = None
-                                name = data.get("name","?")
-                                consol_mins = int(consol_duration / 60)
-                                print(f"[Re-aceleracao] ? {name} - consolidou {consol_mins}min e voltou a subir! Pico anterior: +{peak_pct:.0f}% | Agora: +{pct:.0f}%")
-
-                                # Envia alerta especial de re-acelerao
-                                if "COLA" not in DISCORD_WEBHOOK_URL:
-                                    dex_url = f"https://dexscreener.com/solana/{mint}"
-                                    reaccel_desc = (
-                                        "**Consolidou " + str(consol_mins) + " minutos e voltou a subir!**\n\n"
-                                        + "Pico anterior: **+" + f"{peak_pct:.0f}" + "%**\n"
-                                        + "Agora: **+" + f"{pct:.0f}" + "%**\n"
-                                        + "Minimo consolidacao: +" + f"{data.get('consolidation_low',0):.0f}" + "%\n\n"
-                                        + "[Chart](" + dex_url + ")"
-                                    )
-                                    embed = {
-                                        "title":       "RE-ACELERACAO -- " + name + "!",
-                                        "description": reaccel_desc,
-                                        "color": 0x00ccff,
-                                        "footer": {"text": "First Call Bot • Re-acceleration detected"},
-                                        "timestamp": datetime.now(timezone.utc).isoformat()
-                                    }
-                                    try:
-                                        async with aiohttp.ClientSession() as s:
-                                            await s.post(DISCORD_WEBHOOK_URL,
-                                                        json={"embeds": [embed]},
-                                                        timeout=aiohttp.ClientTimeout(total=5))
-                                    except Exception as e:
-                                        print(f"[Re-aceleracao] Erro Discord: {e}")
-                        else:
-                            # Resetar consolidao se saiu antes de 30 min
-                            if pct < consolidation_zone_low:
-                                data["consolidation_start"] = None
 
             await asyncio.sleep(1)  # pequena pausa entre moedas
 
