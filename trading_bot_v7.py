@@ -408,6 +408,7 @@ async def save_state_cloud():
             "alerted_tokens":  list(alerted_tokens)[-200:],
             "learns_done":     learns_done,
             "alerts_sent":     alerts_sent,
+            "scores_100x":     scores_100x[-100:],
             "pending_checks":  {
                 mint: {k: (list(v) if isinstance(v, set) else v) for k, v in data.items()}
                 for mint, data in list(pending_checks.items())
@@ -429,7 +430,7 @@ async def save_state_cloud():
 
 async def load_state_cloud():
     """Carrega estado do JSONBin ao arrancar."""
-    global pattern_history, WEIGHTS, alerted_tokens, learns_done, alerts_sent
+    global pattern_history, WEIGHTS, alerted_tokens, learns_done, alerts_sent, scores_100x
     if not JSONBIN_KEY or not JSONBIN_ID: return False
     try:
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(), connector_owner=True) as s:
@@ -452,6 +453,9 @@ async def load_state_cloud():
                     learns_done  = data["learns_done"]
                 if data.get("alerts_sent"):
                     alerts_sent  = data["alerts_sent"]
+                if data.get("scores_100x"):
+                    scores_100x = data["scores_100x"]
+                    print(f"[JSONBin] Threshold: {len(scores_100x)} scores historicos carregados")
                 if data.get("pending_checks"):
                     now_t = time.time()
                     for mint, entry in data["pending_checks"].items():
@@ -956,28 +960,27 @@ def calculate_confidence(mint):
                 pts = min(int(w["trade_freq"]), int(tps*8)); score += pts
                 signals.append(f"⚡ Freq: {tps:.2f}/s (+{pts}pts)"); active.append("trade_freq")
 
-    # 8a-extra. Padro histrico - baseado em backtesting
-    if len(pattern_history) >= 20:
-        # Encontra padres similares no histrico
+    # 8a-extra. Padrao historico - baseado em backtesting
+    if len(pattern_history) >= 5:
+        # Encontra padroes similares no historico - criterios mais flexiveis
         similar = [p for p in pattern_history if (
-            abs(p.get("mcap",0) - d.get("market_cap",0)) < 100000 and
-            abs(p.get("vol_ratio",0) - (d.get("vol_1h",0)/max(d.get("vol_24h",1),1))) < 0.10 and
-            p.get("hot") == in_hot
+            abs(p.get("mcap",0) - d.get("market_cap",0)) < 300000 and
+            abs(p.get("vol_ratio",0) - (d.get("vol_1h",0)/max(d.get("vol_24h",1),1))) < 0.30
         )]
-        if len(similar) >= 5:
-            wins_p  = sum(1 for p in similar if p.get("result",0) >= 1.0)  # sucesso = +100%
+        if len(similar) >= 3:
+            wins_p   = sum(1 for p in similar if p.get("result",0) >= 1.0)
             win_rate = wins_p / len(similar)
             avg_gain = sum(p.get("result",0) for p in similar) / len(similar)
             if win_rate >= 0.70:
                 pts = int(w.get("pattern_strong", 35)); score += pts
-                signals.append(f"🎯 Padrao historico: {win_rate*100:.0f}% acerto em {len(similar)} casos (+{pts}pts)")
+                signals.append(f"🎯 Based on {len(similar)} similar coins: {win_rate*100:.0f}% hit rate (+{pts}pts)")
                 active.append("pattern_strong")
                 d["pattern_win_rate"] = win_rate
                 d["pattern_avg_gain"] = avg_gain
                 d["pattern_count"]    = len(similar)
-            elif win_rate < 0.40 and len(similar) >= 10:
+            elif win_rate < 0.40 and len(similar) >= 5:
                 score += int(w.get("pattern_weak", -20))
-                signals.append(f"?? Padrao fraco: so {win_rate*100:.0f}% acerto ({w.get('pattern_weak',-20):.0f}pts)")
+                signals.append(f"⚠️ Weak pattern: only {win_rate*100:.0f}% hit rate ({w.get('pattern_weak',-20):.0f}pts)")
                 active.append("pattern_weak")
 
     # 8a-extra2. Tema em trend
@@ -3278,17 +3281,20 @@ async def learn_from_skipped():
                 total_r = wins_total + losses_total
                 ratio_str = f"{wins_total}W / {losses_total}L"
                 winrate_str = f"{wins_total/total_r*100:.0f}%" if total_r > 0 else "N/A"
+                multiplier  = int((peak_pct_final + 100) / 100)
+                multi_str   = f"{multiplier}x" if multiplier >= 2 else ""
+                footer_str  = f"First Call Bot • {BOT_VERSION}" + (f" | {multi_str}" if multi_str else "")
                 try:
                     async with aiohttp.ClientSession() as _s:
                         await _s.post(url_r, json={"embeds": [{
-                            "title": f"{r_emoji} {name_r} | Pico +{peak_pct_final:.0f}%",
+                            "title": f"{r_emoji} {name_r} | +{peak_pct_final:.0f}%",
                             "description": (
                                 f"Alerted at **{alert_time_str}** | 24h peak: **+{peak_pct_final:.0f}%**\n"
                                 f"[Chart](https://dexscreener.com/solana/{mint})\n\n"
                                 f"📊 **Win/Loss:** {ratio_str} | Win rate: **{winrate_str}**"
                             ),
                             "color": r_color,
-                            "footer": {"text": "First Call Bot • Final result 24h"},
+                            "footer": {"text": footer_str},
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }]}, timeout=aiohttp.ClientTimeout(total=5))
                     print(f"[Resultados] {name_r} +{peak_pct_final:.0f}% -> #resultados")
@@ -3806,7 +3812,7 @@ async def keepalive_server():
 async def recover_missed_results():
     """
     Apos reinicio, verifica moedas alertadas que estavam a ser monitorizadas.
-    Vai ao DexScreener buscar o preco atual e regista no track-record se subiram.
+    Usa o priceChange.h24 do DexScreener para estimar o pico real durante o downtime.
     Evita perder resultados quando o bot reinicia.
     """
     if not pending_checks:
@@ -3826,18 +3832,48 @@ async def recover_missed_results():
         if now - alert_time > 86400: continue
 
         try:
-            dex = await fetch_dexscreener(mint)
-            if not dex or dex.get("price", 0) <= 0: continue
-            current_price = dex["price"]
-            change_pct    = (current_price - alert_price) / alert_price * 100
+            async with aiohttp.ClientSession() as s:
+                async with s.get(
+                    f"https://api.dexscreener.com/latest/dex/tokens/{mint}",
+                    timeout=aiohttp.ClientTimeout(total=8)
+                ) as r:
+                    if r.status != 200: continue
+                    data = await r.json()
 
-            # Atualiza peak se subiu
-            if change_pct > chk.get("peak_change", 0):
-                chk["peak_change"] = change_pct
-                print(f"[Recovery] {name} — pico recuperado: +{change_pct:.0f}%")
+            pairs = data.get("pairs") or []
+            if not pairs: continue
+            # Pega o par com mais liquidez
+            pair = max(pairs, key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0))
+
+            current_price = float(pair.get("priceUsd") or 0)
+            if current_price <= 0: continue
+
+            # Usa priceChange.h24 para estimar o pico - se subiu 400% nas 24h o high foi ~400%
+            price_change = pair.get("priceChange") or {}
+            high_24h_pct = float(price_change.get("h24") or 0)
+
+            # Pico estimado = max entre preco atual e high 24h
+            change_current = (current_price - alert_price) / alert_price * 100
+            peak_estimate  = max(change_current, high_24h_pct)
+
+            if peak_estimate > chk.get("peak_change", 0):
+                chk["peak_change"] = peak_estimate
+                # Actualiza peak_pct para o update_loop continuar a partir do pico real
+                chk["peak_pct"] = peak_estimate
+                # Marca milestones já atingidos para nao repetir updates passados
+                milestones_all = [25,50,75,100,150,200,250,300,350,400,450,500,600,700,800,900,1000]
+                already_hit = [m for m in milestones_all if peak_estimate >= m]
+                if already_hit:
+                    existing = chk.get("milestones_up", [])
+                    if not isinstance(existing, list): existing = list(existing)
+                    for m in already_hit:
+                        if m not in existing:
+                            existing.append(m)
+                    chk["milestones_up"] = existing
+                print(f"[Recovery] {name} — pico recuperado: +{peak_estimate:.0f}% (atual:{change_current:.0f}% | 24h high:{high_24h_pct:.0f}%)")
                 recovered += 1
 
-            await asyncio.sleep(0.5)  # nao sobrecarrega a API
+            await asyncio.sleep(0.5)
         except Exception as e:
             print(f"[Recovery] Erro em {name}: {e}")
 
@@ -3863,12 +3899,13 @@ async def main():
     if MOD_LOG_WEBHOOK_URL:
         try:
             import datetime as dt
-            now_str = dt.datetime.now().strftime("%d/%m/%Y às %H:%M")
+            now_str = dt.datetime.now().strftime("%d/%m/%Y at %H:%M")
             async with aiohttp.ClientSession() as s:
                 await s.post(MOD_LOG_WEBHOOK_URL, json={"embeds": [{
-                    "title": "🔄 Bot reiniciado",
-                    "description": f"First Call Bot está online.\n`{BOT_VERSION}`\n\n🕐 {now_str}",
+                    "title": "🔄 Bot restarted",
+                    "description": f"First Call Bot is online.\n\n🕐 {now_str}",
                     "color": 0x5865f2,
+                    "footer": {"text": f"First Call Bot • {BOT_VERSION}"},
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }]}, timeout=aiohttp.ClientTimeout(total=5))
         except Exception as e:
@@ -3903,18 +3940,18 @@ async def main():
             target_url = MOD_LOG_WEBHOOK_URL if MOD_LOG_WEBHOOK_URL else ""
             if target_url:
                 crash_desc = (
-                    f"O bot esteve em baixo **{downtime_str}**.\n\n"
-                    f"Última sessão tinha:\n"
-                    f"- {last_state.get('alerts_sent',0)} alertas enviados\n"
-                    f"- {last_state.get('learns_done',0)} aprendizagens\n"
-                    f"- {last_state.get('patterns_count',0)} padrões guardados\n\n"
-                    f"Bot a retomar operação normal..."
+                    f"Bot was offline for **{downtime_str}**.\n\n"
+                    f"Last session stats:\n"
+                    f"- {last_state.get('alerts_sent',0)} alerts sent\n"
+                    f"- {last_state.get('learns_done',0)} learnings\n"
+                    f"- {last_state.get('patterns_count',0)} patterns saved\n\n"
+                    f"Bot resuming normal operation..."
                 )
                 crash_embed = {
-                    "title":       "⚠️ Bot reiniciou após downtime",
+                    "title":       "⚠️ Bot restarted after downtime",
                     "description": crash_desc,
                     "color": 0xff9900,
-                    "footer": {"text": "First Call Bot"},
+                    "footer": {"text": f"First Call Bot • {BOT_VERSION}"},
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 try:
@@ -3930,22 +3967,6 @@ async def main():
     else:
         print("[Estado] Primeiro arranque - sem estado anterior")
 
-    # -- MENSAGEM DE ARRANQUE NO DISCORD ---------------------
-    if "COLA" not in DISCORD_WEBHOOK_URL:
-        startup_embed = {
-            "title":       f"[BOT] Bot Arrancou - {BOT_VERSION}",
-            "description": "Nova sessao iniciada! | DexScreener primario | MCap $80K-$1M | Liq $12K-$70K | Vol>5%",
-            "color": 0x00ff88,
-            "footer": {"text": "First Call Bot"},
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        try:
-            async with aiohttp.ClientSession() as s:
-                await s.post(DISCORD_WEBHOOK_URL,
-                            json={"embeds": [startup_embed]},
-                            timeout=aiohttp.ClientTimeout(total=5))
-        except Exception as e:
-            print(f"[Arranque] Erro Discord: {e}")
 
     # Corre backtesting antes de tudo
     await run_backtesting()
